@@ -1,0 +1,660 @@
+// Package mysql provides tests for the MySQL implementation of the store.Store interface.
+package mysql
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/DATA-DOG/go-sqlmock"
+	"pgregory.net/rapid"
+
+	"rte"
+	"rte/store"
+)
+
+// ============================================================================
+// Test Helpers
+// ============================================================================
+
+func newTestStore(t *testing.T) (*MySQLStore, sqlmock.Sqlmock, func()) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("failed to create sqlmock: %v", err)
+	}
+	s := New(db)
+	return s, mock, func() { db.Close() }
+}
+
+func createTestTransaction(txID, txType string) *store.Transaction {
+	return store.NewTransaction(txID, txType, []string{"step1", "step2"})
+}
+
+func createTestStep(txID string, stepIndex int, stepName string) *store.StepRecord {
+	return store.NewStepRecord(txID, stepIndex, stepName)
+}
+
+// ============================================================================
+// Transaction CRUD Tests
+// ============================================================================
+
+func TestMySQLStore_CreateTransaction(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	tx := createTestTransaction("tx-123", "test_type")
+	tx.LockKeys = []string{"key1", "key2"}
+
+	mock.ExpectExec("INSERT INTO rte_transactions").
+		WithArgs(
+			tx.TxID, tx.TxType, tx.Status, tx.CurrentStep, tx.TotalSteps,
+			sqlmock.AnyArg(), // step_names JSON
+			sqlmock.AnyArg(), // lock_keys JSON
+			sqlmock.AnyArg(), // context JSON
+			tx.ErrorMsg, tx.RetryCount, tx.MaxRetries, tx.Version,
+			sqlmock.AnyArg(), sqlmock.AnyArg(), // created_at, updated_at
+			tx.LockedAt, tx.CompletedAt, tx.TimeoutAt,
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := s.CreateTransaction(context.Background(), tx)
+	if err != nil {
+		t.Errorf("CreateTransaction failed: %v", err)
+	}
+
+	if tx.ID != 1 {
+		t.Errorf("expected ID 1, got %d", tx.ID)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
+}
+
+func TestMySQLStore_CreateTransaction_DuplicateKey(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	tx := createTestTransaction("tx-123", "test_type")
+
+	mock.ExpectExec("INSERT INTO rte_transactions").
+		WillReturnError(errors.New("Duplicate entry 'tx-123' for key 'tx_id'"))
+
+	err := s.CreateTransaction(context.Background(), tx)
+	if !errors.Is(err, rte.ErrTransactionAlreadyExists) {
+		t.Errorf("expected ErrTransactionAlreadyExists, got %v", err)
+	}
+}
+
+func TestMySQLStore_GetTransaction(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "tx_type", "status", "current_step", "total_steps", "step_names",
+		"lock_keys", "context", "error_msg", "retry_count", "max_retries", "version",
+		"created_at", "updated_at", "locked_at", "completed_at", "timeout_at",
+	}).AddRow(
+		1, "tx-123", "test_type", rte.TxStatusCreated, 0, 2, `["step1","step2"]`,
+		`["key1"]`, `{"tx_id":"tx-123","tx_type":"test_type"}`, "", 0, 3, 0,
+		now, now, nil, nil, nil,
+	)
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE tx_id = ?").
+		WithArgs("tx-123").
+		WillReturnRows(rows)
+
+	tx, err := s.GetTransaction(context.Background(), "tx-123")
+	if err != nil {
+		t.Errorf("GetTransaction failed: %v", err)
+	}
+
+	if tx.TxID != "tx-123" {
+		t.Errorf("expected TxID 'tx-123', got '%s'", tx.TxID)
+	}
+	if tx.TxType != "test_type" {
+		t.Errorf("expected TxType 'test_type', got '%s'", tx.TxType)
+	}
+	if tx.Status != rte.TxStatusCreated {
+		t.Errorf("expected status CREATED, got %s", tx.Status)
+	}
+}
+
+func TestMySQLStore_GetTransaction_NotFound(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE tx_id = ?").
+		WithArgs("tx-not-found").
+		WillReturnError(sql.ErrNoRows)
+
+	_, err := s.GetTransaction(context.Background(), "tx-not-found")
+	if !errors.Is(err, rte.ErrTransactionNotFound) {
+		t.Errorf("expected ErrTransactionNotFound, got %v", err)
+	}
+}
+
+func TestMySQLStore_UpdateTransaction(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	tx := createTestTransaction("tx-123", "test_type")
+	tx.Status = rte.TxStatusExecuting
+	tx.Version = 0
+
+	mock.ExpectExec("UPDATE rte_transactions SET").
+		WithArgs(
+			tx.Status, tx.CurrentStep, sqlmock.AnyArg(), tx.ErrorMsg,
+			tx.RetryCount, sqlmock.AnyArg(),
+			tx.LockedAt, tx.CompletedAt, tx.TimeoutAt,
+			tx.TxID, tx.Version,
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := s.UpdateTransaction(context.Background(), tx)
+	if err != nil {
+		t.Errorf("UpdateTransaction failed: %v", err)
+	}
+
+	if tx.Version != 1 {
+		t.Errorf("expected version to be incremented to 1, got %d", tx.Version)
+	}
+}
+
+func TestMySQLStore_UpdateTransaction_NotFound(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	tx := createTestTransaction("tx-not-found", "test_type")
+	tx.Version = 0
+
+	mock.ExpectExec("UPDATE rte_transactions SET").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	// Check if transaction exists
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM rte_transactions WHERE tx_id = ?").
+		WithArgs("tx-not-found").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	err := s.UpdateTransaction(context.Background(), tx)
+	if !errors.Is(err, rte.ErrTransactionNotFound) {
+		t.Errorf("expected ErrTransactionNotFound, got %v", err)
+	}
+}
+
+// ============================================================================
+// Step CRUD Tests
+// ============================================================================
+
+func TestMySQLStore_CreateStep(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	step := createTestStep("tx-123", 0, "step1")
+
+	mock.ExpectExec("INSERT INTO rte_steps").
+		WithArgs(
+			step.TxID, step.StepIndex, step.StepName, step.Status, step.IdempotencyKey,
+			step.Input, step.Output, step.ErrorMsg, step.RetryCount,
+			step.StartedAt, step.CompletedAt, sqlmock.AnyArg(), sqlmock.AnyArg(),
+		).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := s.CreateStep(context.Background(), step)
+	if err != nil {
+		t.Errorf("CreateStep failed: %v", err)
+	}
+
+	if step.ID != 1 {
+		t.Errorf("expected ID 1, got %d", step.ID)
+	}
+}
+
+func TestMySQLStore_GetStep(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "step_index", "step_name", "status", "idempotency_key",
+		"input", "output", "error_msg", "retry_count",
+		"started_at", "completed_at", "created_at", "updated_at",
+	}).AddRow(
+		1, "tx-123", 0, "step1", rte.StepStatusPending, "",
+		nil, nil, "", 0,
+		nil, nil, now, now,
+	)
+
+	mock.ExpectQuery("SELECT .+ FROM rte_steps WHERE tx_id = \\? AND step_index = \\?").
+		WithArgs("tx-123", 0).
+		WillReturnRows(rows)
+
+	step, err := s.GetStep(context.Background(), "tx-123", 0)
+	if err != nil {
+		t.Errorf("GetStep failed: %v", err)
+	}
+
+	if step.StepName != "step1" {
+		t.Errorf("expected StepName 'step1', got '%s'", step.StepName)
+	}
+}
+
+func TestMySQLStore_GetStep_NotFound(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT .+ FROM rte_steps WHERE tx_id = \\? AND step_index = \\?").
+		WithArgs("tx-123", 99).
+		WillReturnError(sql.ErrNoRows)
+
+	_, err := s.GetStep(context.Background(), "tx-123", 99)
+	if !errors.Is(err, rte.ErrStepNotFound) {
+		t.Errorf("expected ErrStepNotFound, got %v", err)
+	}
+}
+
+func TestMySQLStore_UpdateStep(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	step := createTestStep("tx-123", 0, "step1")
+	step.Status = rte.StepStatusExecuting
+
+	mock.ExpectExec("UPDATE rte_steps SET").
+		WithArgs(
+			step.Status, step.IdempotencyKey, step.Input, step.Output,
+			step.ErrorMsg, step.RetryCount, step.StartedAt, step.CompletedAt, sqlmock.AnyArg(),
+			step.TxID, step.StepIndex,
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := s.UpdateStep(context.Background(), step)
+	if err != nil {
+		t.Errorf("UpdateStep failed: %v", err)
+	}
+}
+
+func TestMySQLStore_UpdateStep_NotFound(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	step := createTestStep("tx-123", 99, "step_not_found")
+
+	mock.ExpectExec("UPDATE rte_steps SET").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := s.UpdateStep(context.Background(), step)
+	if !errors.Is(err, rte.ErrStepNotFound) {
+		t.Errorf("expected ErrStepNotFound, got %v", err)
+	}
+}
+
+func TestMySQLStore_GetSteps(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "step_index", "step_name", "status", "idempotency_key",
+		"input", "output", "error_msg", "retry_count",
+		"started_at", "completed_at", "created_at", "updated_at",
+	}).
+		AddRow(1, "tx-123", 0, "step1", rte.StepStatusCompleted, "", nil, nil, "", 0, nil, nil, now, now).
+		AddRow(2, "tx-123", 1, "step2", rte.StepStatusPending, "", nil, nil, "", 0, nil, nil, now, now)
+
+	mock.ExpectQuery("SELECT .+ FROM rte_steps WHERE tx_id = \\? ORDER BY step_index ASC").
+		WithArgs("tx-123").
+		WillReturnRows(rows)
+
+	steps, err := s.GetSteps(context.Background(), "tx-123")
+	if err != nil {
+		t.Errorf("GetSteps failed: %v", err)
+	}
+
+	if len(steps) != 2 {
+		t.Errorf("expected 2 steps, got %d", len(steps))
+	}
+}
+
+// ============================================================================
+// Idempotency Tests
+// ============================================================================
+
+func TestMySQLStore_CheckIdempotency_NotExists(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT result FROM rte_idempotency").
+		WithArgs("key-123", sqlmock.AnyArg()).
+		WillReturnError(sql.ErrNoRows)
+
+	exists, result, err := s.CheckIdempotency(context.Background(), "key-123")
+	if err != nil {
+		t.Errorf("CheckIdempotency failed: %v", err)
+	}
+	if exists {
+		t.Error("expected exists to be false")
+	}
+	if result != nil {
+		t.Error("expected result to be nil")
+	}
+}
+
+func TestMySQLStore_CheckIdempotency_Exists(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	expectedResult := []byte(`{"status":"success"}`)
+	rows := sqlmock.NewRows([]string{"result"}).AddRow(expectedResult)
+
+	mock.ExpectQuery("SELECT result FROM rte_idempotency").
+		WithArgs("key-123", sqlmock.AnyArg()).
+		WillReturnRows(rows)
+
+	exists, result, err := s.CheckIdempotency(context.Background(), "key-123")
+	if err != nil {
+		t.Errorf("CheckIdempotency failed: %v", err)
+	}
+	if !exists {
+		t.Error("expected exists to be true")
+	}
+	if string(result) != string(expectedResult) {
+		t.Errorf("expected result %s, got %s", expectedResult, result)
+	}
+}
+
+func TestMySQLStore_MarkIdempotency(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	result := []byte(`{"status":"success"}`)
+
+	mock.ExpectExec("INSERT INTO rte_idempotency").
+		WithArgs("key-123", result, sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	err := s.MarkIdempotency(context.Background(), "key-123", result, 24*time.Hour)
+	if err != nil {
+		t.Errorf("MarkIdempotency failed: %v", err)
+	}
+}
+
+// ============================================================================
+// Recovery Query Tests
+// ============================================================================
+
+func TestMySQLStore_GetStuckTransactions(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "tx_type", "status", "current_step", "total_steps", "step_names",
+		"lock_keys", "context", "error_msg", "retry_count", "max_retries", "version",
+		"created_at", "updated_at", "locked_at", "completed_at", "timeout_at",
+	}).AddRow(
+		1, "tx-stuck", "test_type", rte.TxStatusExecuting, 1, 2, `["step1","step2"]`,
+		`[]`, `{"tx_id":"tx-stuck"}`, "", 0, 3, 0,
+		now.Add(-10*time.Minute), now.Add(-10*time.Minute), nil, nil, nil,
+	)
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE status IN").
+		WithArgs(rte.TxStatusLocked, rte.TxStatusExecuting, sqlmock.AnyArg()).
+		WillReturnRows(rows)
+
+	txs, err := s.GetStuckTransactions(context.Background(), 5*time.Minute)
+	if err != nil {
+		t.Errorf("GetStuckTransactions failed: %v", err)
+	}
+
+	if len(txs) != 1 {
+		t.Errorf("expected 1 stuck transaction, got %d", len(txs))
+	}
+}
+
+func TestMySQLStore_GetRetryableTransactions(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "tx_type", "status", "current_step", "total_steps", "step_names",
+		"lock_keys", "context", "error_msg", "retry_count", "max_retries", "version",
+		"created_at", "updated_at", "locked_at", "completed_at", "timeout_at",
+	}).AddRow(
+		1, "tx-failed", "test_type", rte.TxStatusFailed, 1, 2, `["step1","step2"]`,
+		`[]`, `{"tx_id":"tx-failed"}`, "some error", 1, 3, 0,
+		now, now, nil, nil, nil,
+	)
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE status = \\? AND retry_count < \\?").
+		WithArgs(rte.TxStatusFailed, 3).
+		WillReturnRows(rows)
+
+	txs, err := s.GetRetryableTransactions(context.Background(), 3)
+	if err != nil {
+		t.Errorf("GetRetryableTransactions failed: %v", err)
+	}
+
+	if len(txs) != 1 {
+		t.Errorf("expected 1 retryable transaction, got %d", len(txs))
+	}
+}
+
+// ============================================================================
+// Optimistic Lock Tests (Property 3)
+// ============================================================================
+
+func TestMySQLStore_UpdateTransaction_VersionConflict(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	tx := createTestTransaction("tx-123", "test_type")
+	tx.Version = 5 // Assume we have version 5
+
+	// Simulate version conflict - no rows affected because version doesn't match
+	mock.ExpectExec("UPDATE rte_transactions SET").
+		WithArgs(
+			tx.Status, tx.CurrentStep, sqlmock.AnyArg(), tx.ErrorMsg,
+			tx.RetryCount, sqlmock.AnyArg(),
+			tx.LockedAt, tx.CompletedAt, tx.TimeoutAt,
+			tx.TxID, tx.Version,
+		).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	// Transaction exists but version doesn't match
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM rte_transactions WHERE tx_id = ?").
+		WithArgs("tx-123").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	err := s.UpdateTransaction(context.Background(), tx)
+	if !errors.Is(err, rte.ErrVersionConflict) {
+		t.Errorf("expected ErrVersionConflict, got %v", err)
+	}
+}
+
+// ============================================================================
+// Property-Based Tests
+// ============================================================================
+
+// Property 3: Optimistic Lock Prevents Lost Updates
+// For any transaction, if two concurrent updates attempt to modify the same
+// transaction with the same version, only one should succeed and the other
+// should receive a version conflict error.
+func TestProperty_OptimisticLockPreventsLostUpdates(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate random transaction data
+		txID := rapid.StringMatching(`tx-[a-z0-9]{8}`).Draw(t, "txID")
+		txType := rapid.SampledFrom([]string{"transfer", "deposit", "withdrawal"}).Draw(t, "txType")
+		initialVersion := rapid.IntRange(0, 100).Draw(t, "initialVersion")
+
+		// Create mock store
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("failed to create sqlmock: %v", err)
+		}
+		defer db.Close()
+		s := New(db)
+
+		// Create two copies of the same transaction (simulating two concurrent readers)
+		tx1 := createTestTransaction(txID, txType)
+		tx1.Version = initialVersion
+		tx1.Status = rte.TxStatusExecuting
+
+		tx2 := createTestTransaction(txID, txType)
+		tx2.Version = initialVersion
+		tx2.Status = rte.TxStatusFailed
+
+		// First update succeeds
+		mock.ExpectExec("UPDATE rte_transactions SET").
+			WithArgs(
+				tx1.Status, tx1.CurrentStep, sqlmock.AnyArg(), tx1.ErrorMsg,
+				tx1.RetryCount, sqlmock.AnyArg(),
+				tx1.LockedAt, tx1.CompletedAt, tx1.TimeoutAt,
+				tx1.TxID, tx1.Version,
+			).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		// Second update fails (version already incremented by first update)
+		mock.ExpectExec("UPDATE rte_transactions SET").
+			WithArgs(
+				tx2.Status, tx2.CurrentStep, sqlmock.AnyArg(), tx2.ErrorMsg,
+				tx2.RetryCount, sqlmock.AnyArg(),
+				tx2.LockedAt, tx2.CompletedAt, tx2.TimeoutAt,
+				tx2.TxID, tx2.Version,
+			).
+			WillReturnResult(sqlmock.NewResult(0, 0))
+
+		// Transaction exists check for second update
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM rte_transactions WHERE tx_id = ?").
+			WithArgs(txID).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+		// Execute first update - should succeed
+		err1 := s.UpdateTransaction(context.Background(), tx1)
+		if err1 != nil {
+			t.Fatalf("first update should succeed, got error: %v", err1)
+		}
+
+		// Verify version was incremented
+		if tx1.Version != initialVersion+1 {
+			t.Fatalf("expected version %d after first update, got %d", initialVersion+1, tx1.Version)
+		}
+
+		// Execute second update - should fail with version conflict
+		err2 := s.UpdateTransaction(context.Background(), tx2)
+		if !errors.Is(err2, rte.ErrVersionConflict) {
+			t.Fatalf("second update should fail with ErrVersionConflict, got: %v", err2)
+		}
+
+		// Verify second transaction's version was NOT incremented
+		if tx2.Version != initialVersion {
+			t.Fatalf("expected version %d unchanged after failed update, got %d", initialVersion, tx2.Version)
+		}
+
+		// Verify all expectations were met
+		if err := mock.ExpectationsWereMet(); err != nil {
+			t.Fatalf("unfulfilled expectations: %v", err)
+		}
+	})
+}
+
+// Additional property test: Version always increments on successful update
+func TestProperty_VersionIncrementsOnSuccess(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		txID := rapid.StringMatching(`tx-[a-z0-9]{8}`).Draw(t, "txID")
+		txType := rapid.SampledFrom([]string{"transfer", "deposit", "withdrawal"}).Draw(t, "txType")
+		initialVersion := rapid.IntRange(0, 1000).Draw(t, "initialVersion")
+
+		db, mock, err := sqlmock.New()
+		if err != nil {
+			t.Fatalf("failed to create sqlmock: %v", err)
+		}
+		defer db.Close()
+		s := New(db)
+
+		tx := createTestTransaction(txID, txType)
+		tx.Version = initialVersion
+
+		mock.ExpectExec("UPDATE rte_transactions SET").
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		err = s.UpdateTransaction(context.Background(), tx)
+		if err != nil {
+			t.Fatalf("update should succeed, got error: %v", err)
+		}
+
+		// Property: version should always be exactly initialVersion + 1 after successful update
+		if tx.Version != initialVersion+1 {
+			t.Fatalf("expected version %d, got %d", initialVersion+1, tx.Version)
+		}
+	})
+}
+
+// ============================================================================
+// ListTransactions Tests
+// ============================================================================
+
+func TestMySQLStore_ListTransactions(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now()
+	filter := store.NewTxFilter().
+		WithStatus(rte.TxStatusFailed).
+		WithPagination(10, 0)
+
+	// Count query
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM rte_transactions WHERE status IN").
+		WithArgs(rte.TxStatusFailed).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+
+	// List query
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "tx_type", "status", "current_step", "total_steps", "step_names",
+		"lock_keys", "context", "error_msg", "retry_count", "max_retries", "version",
+		"created_at", "updated_at", "locked_at", "completed_at", "timeout_at",
+	}).AddRow(
+		1, "tx-123", "test_type", rte.TxStatusFailed, 1, 2, `["step1","step2"]`,
+		`[]`, `{"tx_id":"tx-123"}`, "error", 0, 3, 0,
+		now, now, nil, nil, nil,
+	)
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions .+ LIMIT \\? OFFSET \\?").
+		WithArgs(rte.TxStatusFailed, 10, 0).
+		WillReturnRows(rows)
+
+	txs, total, err := s.ListTransactions(context.Background(), filter)
+	if err != nil {
+		t.Errorf("ListTransactions failed: %v", err)
+	}
+
+	if total != 1 {
+		t.Errorf("expected total 1, got %d", total)
+	}
+
+	if len(txs) != 1 {
+		t.Errorf("expected 1 transaction, got %d", len(txs))
+	}
+}
+
+func TestMySQLStore_DeleteExpiredIdempotency(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectExec("DELETE FROM rte_idempotency WHERE expires_at < ?").
+		WithArgs(sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 5))
+
+	count, err := s.DeleteExpiredIdempotency(context.Background())
+	if err != nil {
+		t.Errorf("DeleteExpiredIdempotency failed: %v", err)
+	}
+
+	if count != 5 {
+		t.Errorf("expected 5 deleted, got %d", count)
+	}
+}
