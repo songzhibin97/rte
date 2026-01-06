@@ -74,11 +74,12 @@ func (s *MySQLStore) CreateTransaction(ctx context.Context, tx *store.Transactio
 }
 
 // UpdateTransaction updates an existing transaction with optimistic locking.
+// The caller is expected to have already incremented the version before calling this method.
 func (s *MySQLStore) UpdateTransaction(ctx context.Context, tx *store.Transaction) error {
 	query := `
 		UPDATE rte_transactions SET
 			status = ?, current_step = ?, context = ?, error_msg = ?,
-			retry_count = ?, version = version + 1, updated_at = ?,
+			retry_count = ?, version = ?, updated_at = ?,
 			locked_at = ?, completed_at = ?, timeout_at = ?
 		WHERE tx_id = ? AND version = ?
 	`
@@ -88,11 +89,13 @@ func (s *MySQLStore) UpdateTransaction(ctx context.Context, tx *store.Transactio
 		return fmt.Errorf("marshal context: %w", err)
 	}
 
+	// The caller has already incremented the version, so we use tx.Version for the new value
+	// and tx.Version-1 for the WHERE clause to match the existing version
 	result, err := s.db.ExecContext(ctx, query,
 		tx.Status, tx.CurrentStep, contextJSON, tx.ErrorMsg,
-		tx.RetryCount, time.Now(),
+		tx.RetryCount, tx.Version, time.Now(),
 		tx.LockedAt, tx.CompletedAt, tx.TimeoutAt,
-		tx.TxID, tx.Version,
+		tx.TxID, tx.Version-1,
 	)
 	if err != nil {
 		return fmt.Errorf("%w: update transaction: %v", rte.ErrStoreOperationFailed, err)
@@ -115,8 +118,6 @@ func (s *MySQLStore) UpdateTransaction(ctx context.Context, tx *store.Transactio
 		return rte.ErrVersionConflict
 	}
 
-	// Update local version
-	tx.Version++
 	tx.UpdatedAt = time.Now()
 
 	return nil

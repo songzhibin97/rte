@@ -143,14 +143,14 @@ func TestMySQLStore_UpdateTransaction(t *testing.T) {
 
 	tx := createTestTransaction("tx-123", "test_type")
 	tx.Status = rte.TxStatusExecuting
-	tx.Version = 0
+	tx.Version = 1 // Caller is expected to have already incremented the version
 
 	mock.ExpectExec("UPDATE rte_transactions SET").
 		WithArgs(
 			tx.Status, tx.CurrentStep, sqlmock.AnyArg(), tx.ErrorMsg,
-			tx.RetryCount, sqlmock.AnyArg(),
+			tx.RetryCount, tx.Version, sqlmock.AnyArg(), // version and updated_at
 			tx.LockedAt, tx.CompletedAt, tx.TimeoutAt,
-			tx.TxID, tx.Version,
+			tx.TxID, tx.Version-1, // WHERE clause uses version-1
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
@@ -159,8 +159,9 @@ func TestMySQLStore_UpdateTransaction(t *testing.T) {
 		t.Errorf("UpdateTransaction failed: %v", err)
 	}
 
+	// Version should remain the same (caller already incremented it)
 	if tx.Version != 1 {
-		t.Errorf("expected version to be incremented to 1, got %d", tx.Version)
+		t.Errorf("expected version to remain 1, got %d", tx.Version)
 	}
 }
 
@@ -453,15 +454,16 @@ func TestMySQLStore_UpdateTransaction_VersionConflict(t *testing.T) {
 	defer cleanup()
 
 	tx := createTestTransaction("tx-123", "test_type")
-	tx.Version = 5 // Assume we have version 5
+	tx.Version = 6 // Caller has already incremented version to 6
 
 	// Simulate version conflict - no rows affected because version doesn't match
+	// The WHERE clause uses version-1 (5), but the actual version in DB is different
 	mock.ExpectExec("UPDATE rte_transactions SET").
 		WithArgs(
 			tx.Status, tx.CurrentStep, sqlmock.AnyArg(), tx.ErrorMsg,
-			tx.RetryCount, sqlmock.AnyArg(),
+			tx.RetryCount, tx.Version, sqlmock.AnyArg(), // version and updated_at
 			tx.LockedAt, tx.CompletedAt, tx.TimeoutAt,
-			tx.TxID, tx.Version,
+			tx.TxID, tx.Version-1, // WHERE clause uses version-1
 		).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -484,6 +486,7 @@ func TestMySQLStore_UpdateTransaction_VersionConflict(t *testing.T) {
 // For any transaction, if two concurrent updates attempt to modify the same
 // transaction with the same version, only one should succeed and the other
 // should receive a version conflict error.
+// Note: The caller is expected to have already incremented the version before calling UpdateTransaction.
 func TestProperty_OptimisticLockPreventsLostUpdates(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Generate random transaction data
@@ -500,31 +503,33 @@ func TestProperty_OptimisticLockPreventsLostUpdates(t *testing.T) {
 		s := New(db)
 
 		// Create two copies of the same transaction (simulating two concurrent readers)
+		// Both callers have read version=initialVersion and incremented to initialVersion+1
 		tx1 := createTestTransaction(txID, txType)
-		tx1.Version = initialVersion
+		tx1.Version = initialVersion + 1 // Caller has already incremented
 		tx1.Status = rte.TxStatusExecuting
 
 		tx2 := createTestTransaction(txID, txType)
-		tx2.Version = initialVersion
+		tx2.Version = initialVersion + 1 // Caller has already incremented (same as tx1)
 		tx2.Status = rte.TxStatusFailed
 
-		// First update succeeds
+		// First update succeeds - WHERE clause uses version-1 (initialVersion)
 		mock.ExpectExec("UPDATE rte_transactions SET").
 			WithArgs(
 				tx1.Status, tx1.CurrentStep, sqlmock.AnyArg(), tx1.ErrorMsg,
-				tx1.RetryCount, sqlmock.AnyArg(),
+				tx1.RetryCount, tx1.Version, sqlmock.AnyArg(), // version and updated_at
 				tx1.LockedAt, tx1.CompletedAt, tx1.TimeoutAt,
-				tx1.TxID, tx1.Version,
+				tx1.TxID, initialVersion, // WHERE clause uses version-1
 			).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 
 		// Second update fails (version already incremented by first update)
+		// WHERE clause uses version-1 (initialVersion), but DB now has initialVersion+1
 		mock.ExpectExec("UPDATE rte_transactions SET").
 			WithArgs(
 				tx2.Status, tx2.CurrentStep, sqlmock.AnyArg(), tx2.ErrorMsg,
-				tx2.RetryCount, sqlmock.AnyArg(),
+				tx2.RetryCount, tx2.Version, sqlmock.AnyArg(), // version and updated_at
 				tx2.LockedAt, tx2.CompletedAt, tx2.TimeoutAt,
-				tx2.TxID, tx2.Version,
+				tx2.TxID, initialVersion, // WHERE clause uses version-1
 			).
 			WillReturnResult(sqlmock.NewResult(0, 0))
 
@@ -539,7 +544,7 @@ func TestProperty_OptimisticLockPreventsLostUpdates(t *testing.T) {
 			t.Fatalf("first update should succeed, got error: %v", err1)
 		}
 
-		// Verify version was incremented
+		// Version should remain the same (caller already incremented it)
 		if tx1.Version != initialVersion+1 {
 			t.Fatalf("expected version %d after first update, got %d", initialVersion+1, tx1.Version)
 		}
@@ -550,9 +555,9 @@ func TestProperty_OptimisticLockPreventsLostUpdates(t *testing.T) {
 			t.Fatalf("second update should fail with ErrVersionConflict, got: %v", err2)
 		}
 
-		// Verify second transaction's version was NOT incremented
-		if tx2.Version != initialVersion {
-			t.Fatalf("expected version %d unchanged after failed update, got %d", initialVersion, tx2.Version)
+		// Verify second transaction's version was NOT changed
+		if tx2.Version != initialVersion+1 {
+			t.Fatalf("expected version %d unchanged after failed update, got %d", initialVersion+1, tx2.Version)
 		}
 
 		// Verify all expectations were met
@@ -562,12 +567,13 @@ func TestProperty_OptimisticLockPreventsLostUpdates(t *testing.T) {
 	})
 }
 
-// Additional property test: Version always increments on successful update
+// Additional property test: Version remains unchanged after successful update
+// (caller is expected to have already incremented the version)
 func TestProperty_VersionIncrementsOnSuccess(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		txID := rapid.StringMatching(`tx-[a-z0-9]{8}`).Draw(t, "txID")
 		txType := rapid.SampledFrom([]string{"transfer", "deposit", "withdrawal"}).Draw(t, "txType")
-		initialVersion := rapid.IntRange(0, 1000).Draw(t, "initialVersion")
+		initialVersion := rapid.IntRange(1, 1000).Draw(t, "initialVersion") // Start from 1 since caller increments
 
 		db, mock, err := sqlmock.New()
 		if err != nil {
@@ -577,9 +583,15 @@ func TestProperty_VersionIncrementsOnSuccess(t *testing.T) {
 		s := New(db)
 
 		tx := createTestTransaction(txID, txType)
-		tx.Version = initialVersion
+		tx.Version = initialVersion // Caller has already incremented
 
 		mock.ExpectExec("UPDATE rte_transactions SET").
+			WithArgs(
+				tx.Status, tx.CurrentStep, sqlmock.AnyArg(), tx.ErrorMsg,
+				tx.RetryCount, tx.Version, sqlmock.AnyArg(), // version and updated_at
+				tx.LockedAt, tx.CompletedAt, tx.TimeoutAt,
+				tx.TxID, tx.Version-1, // WHERE clause uses version-1
+			).
 			WillReturnResult(sqlmock.NewResult(0, 1))
 
 		err = s.UpdateTransaction(context.Background(), tx)
@@ -587,9 +599,9 @@ func TestProperty_VersionIncrementsOnSuccess(t *testing.T) {
 			t.Fatalf("update should succeed, got error: %v", err)
 		}
 
-		// Property: version should always be exactly initialVersion + 1 after successful update
-		if tx.Version != initialVersion+1 {
-			t.Fatalf("expected version %d, got %d", initialVersion+1, tx.Version)
+		// Property: version should remain the same (caller already incremented it)
+		if tx.Version != initialVersion {
+			t.Fatalf("expected version %d, got %d", initialVersion, tx.Version)
 		}
 	})
 }
