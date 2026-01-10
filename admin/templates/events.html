@@ -1,0 +1,182 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">事件日志</h1>
+</div>
+
+<div class="card">
+    <div class="card-header">筛选条件</div>
+    <div class="card-body">
+        <form method="GET" action="/events" class="form-inline">
+            <div class="form-group">
+                <label class="form-label">事件类型</label>
+                <select name="type" class="form-control" style="min-width: 180px;">
+                    <option value="">全部类型</option>
+                    {{range .EventTypes}}
+                    <option value="{{.}}"{{if eq . $.Filter.Type}} selected{{end}}>{{eventTypeLabel .}}</option>
+                    {{end}}
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">事务ID</label>
+                <input type="text" name="tx_id" class="form-control" value="{{.Filter.TxID}}" placeholder="输入事务ID">
+            </div>
+            <div class="form-group">
+                <button type="submit" class="btn btn-primary">筛选</button>
+                <a href="/events" class="btn btn-secondary">重置</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        事件列表
+        <button class="btn btn-sm btn-secondary" onclick="location.reload()" style="float: right;">刷新</button>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        {{if .Events}}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th style="width: 60px;">ID</th>
+                    <th>事件类型</th>
+                    <th>事务ID</th>
+                    <th>事务类型</th>
+                    <th>步骤名称</th>
+                    <th>时间</th>
+                    <th style="width: 80px;">详情</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Events}}
+                <tr class="event-row" data-event-id="{{.ID}}">
+                    <td>{{.ID}}</td>
+                    <td>
+                        <span class="status-badge {{eventTypeClass .Type}}">{{eventTypeLabel .Type}}</span>
+                    </td>
+                    <td>
+                        {{if .TxID}}
+                        <a href="/transactions/{{.TxID}}" class="table-link">{{.TxID}}</a>
+                        {{else}}
+                        -
+                        {{end}}
+                    </td>
+                    <td>{{if .TxType}}{{.TxType}}{{else}}-{{end}}</td>
+                    <td>{{if .StepName}}{{.StepName}}{{else}}-{{end}}</td>
+                    <td>{{formatTime .Timestamp}}</td>
+                    <td>
+                        <button class="btn btn-sm btn-secondary" onclick="toggleEventDetail({{.ID}})">
+                            展开
+                        </button>
+                    </td>
+                </tr>
+                <tr class="event-detail-row" id="event-detail-{{.ID}}" style="display: none;">
+                    <td colspan="7" style="background: #f8f9fa; padding: 0;">
+                        <div style="padding: 15px;">
+                            {{if .Error}}
+                            <div class="alert alert-error" style="margin-bottom: 10px;">
+                                <strong>错误信息：</strong>{{.Error}}
+                            </div>
+                            {{end}}
+                            
+                            {{if .Data}}
+                            <div>
+                                <span class="detail-label">事件数据</span>
+                                <pre class="json-display" style="margin-top: 5px;">{{toJSON .Data}}</pre>
+                            </div>
+                            {{else}}
+                            <p style="color: #6b7280;">暂无详细数据</p>
+                            {{end}}
+                        </div>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+        {{else}}
+        <div class="empty-state">
+            <div class="empty-state-icon">📜</div>
+            <p>暂无事件记录</p>
+        </div>
+        {{end}}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">事件类型说明</div>
+    <div class="card-body">
+        <div class="detail-list" style="grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));">
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #dbeafe; color: #1e40af; margin-bottom: 5px;">tx_created</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">事务创建</span>
+            </div>
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #e0e7ff; color: #3730a3; margin-bottom: 5px;">tx_started</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">事务开始执行</span>
+            </div>
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #d1fae5; color: #065f46; margin-bottom: 5px;">tx_completed</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">事务完成</span>
+            </div>
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #fee2e2; color: #991b1b; margin-bottom: 5px;">tx_failed</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">事务失败</span>
+            </div>
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #f3f4f6; color: #374151; margin-bottom: 5px;">tx_cancelled</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">事务取消</span>
+            </div>
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #fef3c7; color: #92400e; margin-bottom: 5px;">tx_compensating</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">事务补偿中</span>
+            </div>
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #e0e7ff; color: #3730a3; margin-bottom: 5px;">tx_compensated</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">事务已补偿</span>
+            </div>
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #fee2e2; color: #991b1b; margin-bottom: 5px;">tx_compensation_failed</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">补偿失败</span>
+            </div>
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #dbeafe; color: #1e40af; margin-bottom: 5px;">step_started</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">步骤开始</span>
+            </div>
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #d1fae5; color: #065f46; margin-bottom: 5px;">step_completed</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">步骤完成</span>
+            </div>
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #fee2e2; color: #991b1b; margin-bottom: 5px;">step_failed</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">步骤失败</span>
+            </div>
+            <div class="detail-item">
+                <span class="status-badge" style="background-color: #e0e7ff; color: #3730a3; margin-bottom: 5px;">step_compensated</span>
+                <span class="detail-value" style="font-size: 0.75rem; color: #6b7280;">步骤已补偿</span>
+            </div>
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+function toggleEventDetail(eventId) {
+    const detailRow = document.getElementById('event-detail-' + eventId);
+    const btn = document.querySelector(`tr[data-event-id="${eventId}"] button`);
+    
+    if (detailRow.style.display === 'none') {
+        detailRow.style.display = 'table-row';
+        btn.textContent = '收起';
+    } else {
+        detailRow.style.display = 'none';
+        btn.textContent = '展开';
+    }
+}
+
+// 自动刷新（每30秒）
+setInterval(() => {
+    location.reload();
+}, 30000);
+</script>
+{{end}}

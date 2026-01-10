@@ -1,0 +1,77 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">仪表盘</h1>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value">{{.Stats.TotalTransactions}}</div>
+        <div class="stat-label">事务总数</div>
+    </div>
+    <div class="stat-card pending">
+        <div class="stat-value">{{.Stats.PendingTransactions}}</div>
+        <div class="stat-label">待处理事务</div>
+    </div>
+    <div class="stat-card failed">
+        <div class="stat-value">{{.Stats.FailedTransactions}}</div>
+        <div class="stat-label">失败事务</div>
+    </div>
+    <div class="stat-card completed">
+        <div class="stat-value">{{.Stats.CompletedTransactions}}</div>
+        <div class="stat-label">已完成事务</div>
+    </div>
+    <div class="stat-card compensated">
+        <div class="stat-value">{{.Stats.CompensatedTransactions}}</div>
+        <div class="stat-label">已补偿事务</div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        系统概览
+        <button class="btn btn-sm btn-secondary" onclick="refreshStats()" style="float: right;">刷新</button>
+    </div>
+    <div class="card-body">
+        <div class="detail-list">
+            <div class="detail-item">
+                <span class="detail-label">待处理状态</span>
+                <span class="detail-value">CREATED, LOCKED, EXECUTING, CONFIRMING</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">失败状态</span>
+                <span class="detail-value">FAILED, COMPENSATION_FAILED, TIMEOUT</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">快速操作</div>
+    <div class="card-body">
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            <a href="/transactions?status=FAILED" class="btn btn-danger">查看失败事务</a>
+            <a href="/transactions?status=LOCKED&status=EXECUTING" class="btn btn-warning">查看卡住事务</a>
+            <a href="/recovery" class="btn btn-primary">恢复监控</a>
+            <a href="/circuit-breakers" class="btn btn-secondary">熔断器状态</a>
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+async function refreshStats() {
+    try {
+        const data = await apiRequest('/api/stats');
+        document.querySelector('.stat-card:nth-child(1) .stat-value').textContent = data.total_transactions;
+        document.querySelector('.stat-card:nth-child(2) .stat-value').textContent = data.pending_transactions;
+        document.querySelector('.stat-card:nth-child(3) .stat-value').textContent = data.failed_transactions;
+        document.querySelector('.stat-card:nth-child(4) .stat-value').textContent = data.completed_transactions;
+        document.querySelector('.stat-card:nth-child(5) .stat-value').textContent = data.compensated_transactions;
+        showAlert('统计数据已刷新', 'success');
+    } catch (error) {
+        showAlert('刷新失败: ' + error.message, 'error');
+    }
+}
+</script>
+{{end}}

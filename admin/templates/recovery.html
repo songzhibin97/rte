@@ -1,0 +1,116 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">恢复监控</h1>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-value" style="color: {{if .Stats.IsRunning}}#059669{{else}}#dc2626{{end}};">
+            {{if .Stats.IsRunning}}运行中{{else}}已停止{{end}}
+        </div>
+        <div class="stat-label">Worker 状态</div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{.Stats.ScannedCount}}</div>
+        <div class="stat-label">已扫描事务</div>
+    </div>
+    <div class="stat-card completed">
+        <div class="stat-value">{{.Stats.ProcessedCount}}</div>
+        <div class="stat-label">已处理事务</div>
+    </div>
+    <div class="stat-card failed">
+        <div class="stat-value">{{.Stats.FailedCount}}</div>
+        <div class="stat-label">处理失败</div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        Worker 状态
+        <button class="btn btn-sm btn-secondary" onclick="refreshRecoveryStats()" style="float: right;">刷新</button>
+    </div>
+    <div class="card-body">
+        <div class="detail-list">
+            <div class="detail-item">
+                <span class="detail-label">运行状态</span>
+                <span class="detail-value">
+                    {{if .Stats.IsRunning}}
+                    <span class="status-badge" style="background-color: #d1fae5; color: #065f46;">● 运行中</span>
+                    {{else}}
+                    <span class="status-badge" style="background-color: #fee2e2; color: #991b1b;">● 已停止</span>
+                    {{end}}
+                </span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">处理成功率</span>
+                <span class="detail-value">
+                    {{if gt .Stats.ScannedCount 0}}
+                    {{printf "%.1f" (mul (div (float64 .Stats.ProcessedCount) (float64 .Stats.ScannedCount)) 100)}}%
+                    {{else}}
+                    -
+                    {{end}}
+                </span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">恢复配置</div>
+    <div class="card-body">
+        <div class="detail-list">
+            <div class="detail-item">
+                <span class="detail-label">扫描间隔</span>
+                <span class="detail-value">{{if .Stats.Config.RecoveryInterval}}{{.Stats.Config.RecoveryInterval}}{{else}}-{{end}}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">卡住阈值</span>
+                <span class="detail-value">{{if .Stats.Config.StuckThreshold}}{{.Stats.Config.StuckThreshold}}{{else}}-{{end}}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">最大重试次数</span>
+                <span class="detail-value">{{if .Stats.Config.MaxRetries}}{{.Stats.Config.MaxRetries}}{{else}}-{{end}}</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">说明</div>
+    <div class="card-body">
+        <div class="alert alert-info" style="margin: 0;">
+            <p><strong>恢复 Worker</strong> 负责自动处理卡住或超时的事务：</p>
+            <ul style="margin: 10px 0 0 20px;">
+                <li>定期扫描处于 LOCKED、EXECUTING、CONFIRMING 状态超过阈值的事务</li>
+                <li>自动重试失败的事务（在最大重试次数内）</li>
+                <li>处理超时的事务</li>
+            </ul>
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+async function refreshRecoveryStats() {
+    try {
+        const data = await apiRequest('/api/recovery/stats');
+        
+        // 更新统计卡片
+        const statCards = document.querySelectorAll('.stat-card');
+        statCards[0].querySelector('.stat-value').textContent = data.is_running ? '运行中' : '已停止';
+        statCards[0].querySelector('.stat-value').style.color = data.is_running ? '#059669' : '#dc2626';
+        statCards[1].querySelector('.stat-value').textContent = data.scanned_count;
+        statCards[2].querySelector('.stat-value').textContent = data.processed_count;
+        statCards[3].querySelector('.stat-value').textContent = data.failed_count;
+        
+        showAlert('数据已刷新', 'success');
+    } catch (error) {
+        showAlert('刷新失败: ' + error.message, 'error');
+    }
+}
+
+// 自动刷新（每30秒）
+setInterval(refreshRecoveryStats, 30000);
+</script>
+{{end}}

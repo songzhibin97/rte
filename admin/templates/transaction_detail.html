@@ -1,0 +1,315 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">
+        <a href="/transactions" style="color: #6b7280; text-decoration: none;">事务列表</a>
+        <span style="color: #d1d5db;"> / </span>
+        事务详情
+    </h1>
+</div>
+
+<div id="alert-container" class="alert-container"></div>
+
+<div class="card">
+    <div class="card-header">
+        基本信息
+        <span class="status-badge {{statusClass .Transaction.Status}}" style="float: right;">
+            {{statusLabel .Transaction.Status}}
+        </span>
+    </div>
+    <div class="card-body">
+        <div class="detail-list">
+            <div class="detail-item">
+                <span class="detail-label">事务ID</span>
+                <span class="detail-value">{{.Transaction.TxID}}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">事务类型</span>
+                <span class="detail-value">{{.Transaction.TxType}}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">当前步骤</span>
+                <span class="detail-value">{{.Transaction.CurrentStep}} / {{.Transaction.TotalSteps}}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">重试次数</span>
+                <span class="detail-value">{{.Transaction.RetryCount}} / {{.Transaction.MaxRetries}}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">版本号</span>
+                <span class="detail-value">{{.Transaction.Version}}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">创建时间</span>
+                <span class="detail-value">{{formatTime .Transaction.CreatedAt}}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">更新时间</span>
+                <span class="detail-value">{{formatTime .Transaction.UpdatedAt}}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">锁定时间</span>
+                <span class="detail-value">{{formatTimePtr .Transaction.LockedAt}}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">完成时间</span>
+                <span class="detail-value">{{formatTimePtr .Transaction.CompletedAt}}</span>
+            </div>
+            <div class="detail-item">
+                <span class="detail-label">超时时间</span>
+                <span class="detail-value">{{formatTimePtr .Transaction.TimeoutAt}}</span>
+            </div>
+        </div>
+        
+        {{if .Transaction.ErrorMsg}}
+        <div class="alert alert-error" style="margin-top: 15px;">
+            <strong>错误信息：</strong>{{.Transaction.ErrorMsg}}
+        </div>
+        {{end}}
+    </div>
+</div>
+
+{{if or .CanForceComplete .CanForceCancel .CanRetry}}
+<div class="card">
+    <div class="card-header">操作</div>
+    <div class="card-body">
+        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+            {{if .CanForceComplete}}
+            <button class="btn btn-warning" onclick="showOperationModal('force-complete', '强制完成')">
+                强制完成
+            </button>
+            {{end}}
+            {{if .CanForceCancel}}
+            <button class="btn btn-danger" onclick="showOperationModal('force-cancel', '强制取消')">
+                强制取消
+            </button>
+            {{end}}
+            {{if .CanRetry}}
+            <button class="btn btn-primary" onclick="retryTransaction()">
+                重试
+            </button>
+            {{end}}
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{if .Transaction.LockKeys}}
+<div class="card">
+    <div class="card-header">锁定键</div>
+    <div class="card-body">
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            {{range .Transaction.LockKeys}}
+            <span style="background: #f3f4f6; padding: 4px 10px; border-radius: 4px; font-family: monospace; font-size: 0.875rem;">{{.}}</span>
+            {{end}}
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{if .Transaction.Input}}
+<div class="card">
+    <div class="card-header collapsible" onclick="toggleCollapsible(this)">
+        输入参数 ▼
+    </div>
+    <div class="collapsible-content show">
+        <pre class="json-display">{{toJSON .Transaction.Input}}</pre>
+    </div>
+</div>
+{{end}}
+
+{{if .Transaction.Output}}
+<div class="card">
+    <div class="card-header collapsible" onclick="toggleCollapsible(this)">
+        输出结果 ▼
+    </div>
+    <div class="collapsible-content show">
+        <pre class="json-display">{{toJSON .Transaction.Output}}</pre>
+    </div>
+</div>
+{{end}}
+
+<div class="card">
+    <div class="card-header">步骤列表 ({{len .Steps}})</div>
+    <div class="card-body" style="padding: 0;">
+        {{if .Steps}}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th style="width: 60px;">#</th>
+                    <th>步骤名称</th>
+                    <th>状态</th>
+                    <th>重试次数</th>
+                    <th>开始时间</th>
+                    <th>完成时间</th>
+                    <th style="width: 80px;">详情</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Steps}}
+                <tr class="step-row" data-step-index="{{.StepIndex}}">
+                    <td>{{.StepIndex}}</td>
+                    <td>{{.StepName}}</td>
+                    <td>
+                        <span class="status-badge {{stepStatusClass .Status}}">{{stepStatusLabel .Status}}</span>
+                    </td>
+                    <td>{{.RetryCount}}</td>
+                    <td>{{formatTimePtr .StartedAt}}</td>
+                    <td>{{formatTimePtr .CompletedAt}}</td>
+                    <td>
+                        <button class="btn btn-sm btn-secondary" onclick="toggleStepDetail({{.StepIndex}})">
+                            展开
+                        </button>
+                    </td>
+                </tr>
+                <tr class="step-detail-row" id="step-detail-{{.StepIndex}}" style="display: none;">
+                    <td colspan="7" style="background: #f8f9fa; padding: 0;">
+                        <div style="padding: 15px;">
+                            {{if .IdempotencyKey}}
+                            <div class="detail-item" style="margin-bottom: 10px;">
+                                <span class="detail-label">幂等性Key</span>
+                                <span class="detail-value" style="font-family: monospace;">{{.IdempotencyKey}}</span>
+                            </div>
+                            {{end}}
+                            
+                            {{if .ErrorMsg}}
+                            <div class="alert alert-error" style="margin-bottom: 10px;">
+                                <strong>错误信息：</strong>{{.ErrorMsg}}
+                            </div>
+                            {{end}}
+                            
+                            {{if .Input}}
+                            <div style="margin-bottom: 10px;">
+                                <span class="detail-label">输入数据</span>
+                                <pre class="json-display" style="margin-top: 5px;">{{toJSON .Input}}</pre>
+                            </div>
+                            {{end}}
+                            
+                            {{if .Output}}
+                            <div>
+                                <span class="detail-label">输出数据</span>
+                                <pre class="json-display" style="margin-top: 5px;">{{toJSON .Output}}</pre>
+                            </div>
+                            {{end}}
+                            
+                            {{if and (not .Input) (not .Output) (not .ErrorMsg)}}
+                            <p style="color: #6b7280;">暂无详细数据</p>
+                            {{end}}
+                        </div>
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+        {{else}}
+        <div class="empty-state">
+            <div class="empty-state-icon">📝</div>
+            <p>暂无步骤记录</p>
+        </div>
+        {{end}}
+    </div>
+</div>
+
+<!-- 操作确认模态框 -->
+<div id="operationModal" class="modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 class="modal-title" id="modalTitle">确认操作</h3>
+            <button class="modal-close" onclick="hideModal('operationModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p id="modalMessage" style="margin-bottom: 15px;"></p>
+            <div class="form-group">
+                <label class="form-label">操作原因（必填）</label>
+                <textarea id="operationReason" class="form-control" rows="3" placeholder="请输入操作原因..."></textarea>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="hideModal('operationModal')">取消</button>
+            <button class="btn btn-primary" id="confirmBtn" onclick="confirmOperation()">确认</button>
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+const txID = '{{.Transaction.TxID}}';
+let currentOperation = '';
+
+function toggleStepDetail(stepIndex) {
+    const detailRow = document.getElementById('step-detail-' + stepIndex);
+    const btn = document.querySelector(`tr[data-step-index="${stepIndex}"] button`);
+    
+    if (detailRow.style.display === 'none') {
+        detailRow.style.display = 'table-row';
+        btn.textContent = '收起';
+    } else {
+        detailRow.style.display = 'none';
+        btn.textContent = '展开';
+    }
+}
+
+function showOperationModal(operation, title) {
+    currentOperation = operation;
+    document.getElementById('modalTitle').textContent = '确认' + title;
+    document.getElementById('modalMessage').textContent = `您确定要对事务 ${txID} 执行"${title}"操作吗？此操作不可撤销。`;
+    document.getElementById('operationReason').value = '';
+    
+    const confirmBtn = document.getElementById('confirmBtn');
+    if (operation === 'force-cancel') {
+        confirmBtn.className = 'btn btn-danger';
+    } else {
+        confirmBtn.className = 'btn btn-warning';
+    }
+    
+    showModal('operationModal');
+}
+
+async function confirmOperation() {
+    const reason = document.getElementById('operationReason').value.trim();
+    if (!reason) {
+        alert('请输入操作原因');
+        return;
+    }
+    
+    try {
+        await apiRequest(`/api/transactions/${txID}/${currentOperation}`, {
+            method: 'POST',
+            body: JSON.stringify({ reason: reason })
+        });
+        
+        hideModal('operationModal');
+        showAlert('操作成功', 'success');
+        
+        // 刷新页面
+        setTimeout(() => {
+            location.reload();
+        }, 1000);
+    } catch (error) {
+        showAlert('操作失败: ' + error.message, 'error');
+    }
+}
+
+async function retryTransaction() {
+    if (!confirm(`确定要重试事务 ${txID} 吗？`)) {
+        return;
+    }
+    
+    try {
+        await apiRequest(`/api/transactions/${txID}/retry`, {
+            method: 'POST',
+            body: JSON.stringify({})
+        });
+        
+        showAlert('重试已触发', 'success');
+        
+        // 刷新页面
+        setTimeout(() => {
+            location.reload();
+        }, 1000);
+    } catch (error) {
+        showAlert('重试失败: ' + error.message, 'error');
+    }
+}
+</script>
+{{end}}

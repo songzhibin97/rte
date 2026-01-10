@@ -1,0 +1,144 @@
+{{define "content"}}
+<div class="page-header">
+    <h1 class="page-title">事务列表</h1>
+</div>
+
+<div class="card">
+    <div class="card-header">筛选条件</div>
+    <div class="card-body">
+        <form method="GET" action="/transactions" class="form-inline">
+            <div class="form-group">
+                <label class="form-label">状态</label>
+                <select name="status" class="form-control" multiple style="min-width: 200px; height: 80px;">
+                    <option value="CREATED"{{if hasStatus .Filter.Status "CREATED"}} selected{{end}}>已创建</option>
+                    <option value="LOCKED"{{if hasStatus .Filter.Status "LOCKED"}} selected{{end}}>已锁定</option>
+                    <option value="EXECUTING"{{if hasStatus .Filter.Status "EXECUTING"}} selected{{end}}>执行中</option>
+                    <option value="CONFIRMING"{{if hasStatus .Filter.Status "CONFIRMING"}} selected{{end}}>确认中</option>
+                    <option value="COMPLETED"{{if hasStatus .Filter.Status "COMPLETED"}} selected{{end}}>已完成</option>
+                    <option value="FAILED"{{if hasStatus .Filter.Status "FAILED"}} selected{{end}}>失败</option>
+                    <option value="COMPENSATING"{{if hasStatus .Filter.Status "COMPENSATING"}} selected{{end}}>补偿中</option>
+                    <option value="COMPENSATED"{{if hasStatus .Filter.Status "COMPENSATED"}} selected{{end}}>已补偿</option>
+                    <option value="COMPENSATION_FAILED"{{if hasStatus .Filter.Status "COMPENSATION_FAILED"}} selected{{end}}>补偿失败</option>
+                    <option value="CANCELLED"{{if hasStatus .Filter.Status "CANCELLED"}} selected{{end}}>已取消</option>
+                    <option value="TIMEOUT"{{if hasStatus .Filter.Status "TIMEOUT"}} selected{{end}}>超时</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label class="form-label">事务类型</label>
+                <input type="text" name="tx_type" class="form-control" value="{{.Filter.TxType}}" placeholder="输入事务类型">
+            </div>
+            <div class="form-group">
+                <label class="form-label">开始时间</label>
+                <input type="datetime-local" name="start_time" class="form-control" value="{{.Filter.StartTime}}">
+            </div>
+            <div class="form-group">
+                <label class="form-label">结束时间</label>
+                <input type="datetime-local" name="end_time" class="form-control" value="{{.Filter.EndTime}}">
+            </div>
+            <div class="form-group">
+                <button type="submit" class="btn btn-primary">筛选</button>
+                <a href="/transactions" class="btn btn-secondary">重置</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        事务列表
+        <span style="float: right; font-weight: normal; color: #6b7280;">
+            共 {{.Pagination.Total}} 条记录，第 {{.Pagination.CurrentPage}}/{{.Pagination.TotalPages}} 页
+            <button class="btn btn-sm btn-secondary" onclick="refreshTransactions()" style="margin-left: 10px;">刷新</button>
+        </span>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        {{if .Transactions}}
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>事务ID</th>
+                    <th>类型</th>
+                    <th>状态</th>
+                    <th>进度</th>
+                    <th>重试次数</th>
+                    <th>创建时间</th>
+                    <th>更新时间</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Transactions}}
+                <tr>
+                    <td>
+                        <a href="/transactions/{{.TxID}}" class="table-link">{{.TxID}}</a>
+                    </td>
+                    <td>{{.TxType}}</td>
+                    <td>
+                        <span class="status-badge {{statusClass .Status}}">{{statusLabel .Status}}</span>
+                    </td>
+                    <td>{{.CurrentStep}}/{{.TotalSteps}}</td>
+                    <td>{{.RetryCount}}</td>
+                    <td>{{formatTime .CreatedAt}}</td>
+                    <td>{{formatTime .UpdatedAt}}</td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+        {{else}}
+        <div class="empty-state">
+            <div class="empty-state-icon">📋</div>
+            <p>没有找到符合条件的事务</p>
+        </div>
+        {{end}}
+    </div>
+</div>
+
+{{if gt .Pagination.TotalPages 1}}
+<div class="pagination">
+    {{if .Pagination.HasPrev}}
+    <a href="{{paginationURL .Filter (sub .Pagination.CurrentPage 1)}}" class="pagination-item">上一页</a>
+    {{else}}
+    <span class="pagination-item disabled">上一页</span>
+    {{end}}
+    
+    {{range paginationRange .Pagination.CurrentPage .Pagination.TotalPages}}
+    {{if eq . $.Pagination.CurrentPage}}
+    <span class="pagination-item active">{{.}}</span>
+    {{else}}
+    <a href="{{paginationURL $.Filter .}}" class="pagination-item">{{.}}</a>
+    {{end}}
+    {{end}}
+    
+    {{if .Pagination.HasNext}}
+    <a href="{{paginationURL .Filter (add .Pagination.CurrentPage 1)}}" class="pagination-item">下一页</a>
+    {{else}}
+    <span class="pagination-item disabled">下一页</span>
+    {{end}}
+</div>
+{{end}}
+{{end}}
+
+{{define "scripts"}}
+<script>
+// 刷新事务列表
+function refreshTransactions() {
+    location.reload();
+}
+
+// 自动刷新功能
+let autoRefresh = false;
+let refreshInterval;
+
+function toggleAutoRefresh() {
+    autoRefresh = !autoRefresh;
+    if (autoRefresh) {
+        refreshInterval = setInterval(() => {
+            location.reload();
+        }, 30000);
+        showAlert('已开启自动刷新（30秒）', 'info');
+    } else {
+        clearInterval(refreshInterval);
+        showAlert('已关闭自动刷新', 'info');
+    }
+}
+</script>
+{{end}}

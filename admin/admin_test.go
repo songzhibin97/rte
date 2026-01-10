@@ -2,10 +2,14 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"rte/circuit"
 	"rte/event"
 	"rte/lock"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -837,5 +841,377 @@ func TestAdmin_FilterHelpers(t *testing.T) {
 		if filter.Offset != 10 {
 			t.Errorf("expected offset 10, got %d", filter.Offset)
 		}
+	})
+}
+
+// ============================================================================
+// AdminServer Tests
+// ============================================================================
+
+func TestAdminServer_NewAdminServer(t *testing.T) {
+	store := newMockStore()
+	admin := NewAdmin(WithAdminStore(store))
+
+	server := NewAdminServer(
+		WithAddr(":8081"),
+		WithAdminImpl(admin),
+		WithServerStore(store),
+	)
+
+	if server == nil {
+		t.Fatal("expected server to be created")
+	}
+	if server.addr != ":8081" {
+		t.Errorf("expected addr :8081, got %s", server.addr)
+	}
+	if server.admin == nil {
+		t.Error("expected admin to be set")
+	}
+}
+
+func TestAdminServer_Routes(t *testing.T) {
+	store := newMockStore()
+	admin := NewAdmin(WithAdminStore(store))
+	breaker := newMockBreaker()
+
+	server := NewAdminServer(
+		WithAdminImpl(admin),
+		WithServerBreaker(breaker),
+	)
+
+	handler := server.Handler()
+	if handler == nil {
+		t.Fatal("expected handler to be returned")
+	}
+}
+
+// ============================================================================
+// API Handler Tests
+// ============================================================================
+
+func TestAPIHandler_HandleListTransactions(t *testing.T) {
+	store := newMockStore()
+	admin := NewAdmin(WithAdminStore(store))
+
+	// Create test transactions
+	createTestTransaction(store, "tx-1", "type-a", rte.TxStatusCompleted, []string{"step1"})
+	createTestTransaction(store, "tx-2", "type-b", rte.TxStatusFailed, []string{"step1"})
+
+	server := NewAdminServer(WithAdminImpl(admin))
+	handler := server.Handler()
+
+	t.Run("list all transactions", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/transactions", nil)
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", w.Code)
+		}
+
+		var resp APIResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if !resp.Success {
+			t.Error("expected success to be true")
+		}
+	})
+
+	t.Run("filter by status", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/transactions?status=COMPLETED", nil)
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", w.Code)
+		}
+	})
+}
+
+func TestAPIHandler_HandleGetTransaction(t *testing.T) {
+	store := newMockStore()
+	admin := NewAdmin(WithAdminStore(store))
+
+	createTestTransaction(store, "tx-1", "type-a", rte.TxStatusCompleted, []string{"step1"})
+
+	server := NewAdminServer(WithAdminImpl(admin))
+	handler := server.Handler()
+
+	t.Run("get existing transaction", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/transactions/tx-1", nil)
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d", w.Code)
+		}
+
+		var resp APIResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if !resp.Success {
+			t.Error("expected success to be true")
+		}
+	})
+
+	t.Run("get non-existent transaction", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/api/transactions/non-existent", nil)
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d", w.Code)
+		}
+
+		var resp APIResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if resp.Success {
+			t.Error("expected success to be false")
+		}
+		if resp.Error == nil {
+			t.Error("expected error to be set")
+		}
+		if resp.Error.Code != ErrCodeTransactionNotFound {
+			t.Errorf("expected error code %s, got %s", ErrCodeTransactionNotFound, resp.Error.Code)
+		}
+	})
+}
+
+func TestAPIHandler_HandleGetStats(t *testing.T) {
+	store := newMockStore()
+	admin := NewAdmin(WithAdminStore(store))
+
+	createTestTransaction(store, "tx-1", "type-a", rte.TxStatusCompleted, []string{"step1"})
+	createTestTransaction(store, "tx-2", "type-b", rte.TxStatusFailed, []string{"step1"})
+
+	server := NewAdminServer(WithAdminImpl(admin))
+	handler := server.Handler()
+
+	req := httptest.NewRequest("GET", "/api/stats", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	var resp APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if !resp.Success {
+		t.Error("expected success to be true")
+	}
+}
+
+func TestAPIHandler_HandleForceComplete(t *testing.T) {
+	store := newMockStore()
+	eventBus := event.NewMemoryEventBus()
+	admin := NewAdmin(
+		WithAdminStore(store),
+		WithAdminEventBus(eventBus),
+	)
+
+	createTestTransaction(store, "tx-stuck", "type-a", rte.TxStatusExecuting, []string{"step1"})
+
+	server := NewAdminServer(WithAdminImpl(admin))
+	handler := server.Handler()
+
+	t.Run("force complete stuck transaction", func(t *testing.T) {
+		body := strings.NewReader(`{"reason": "manual intervention"}`)
+		req := httptest.NewRequest("POST", "/api/transactions/tx-stuck/force-complete", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			t.Errorf("expected status 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var resp APIResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+
+		if !resp.Success {
+			t.Error("expected success to be true")
+		}
+	})
+
+	t.Run("force complete non-existent transaction", func(t *testing.T) {
+		body := strings.NewReader(`{"reason": "test"}`)
+		req := httptest.NewRequest("POST", "/api/transactions/non-existent/force-complete", body)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Code != http.StatusNotFound {
+			t.Errorf("expected status 404, got %d", w.Code)
+		}
+	})
+}
+
+func TestAPIHandler_HandleResetCircuitBreaker(t *testing.T) {
+	breaker := newMockBreaker()
+
+	server := NewAdminServer(WithServerBreaker(breaker))
+	handler := server.Handler()
+
+	req := httptest.NewRequest("POST", "/api/circuit-breakers/test-service/reset", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	var resp APIResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if !resp.Success {
+		t.Error("expected success to be true")
+	}
+}
+
+// ============================================================================
+// Page Handler Tests
+// ============================================================================
+
+func TestPageHandler_HandleIndex(t *testing.T) {
+	server := NewAdminServer()
+	handler := server.Handler()
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	if !strings.Contains(w.Body.String(), "RTE 管理控制台") {
+		t.Error("expected page to contain 'RTE 管理控制台'")
+	}
+}
+
+func TestPageHandler_HandleTransactions(t *testing.T) {
+	server := NewAdminServer()
+	handler := server.Handler()
+
+	req := httptest.NewRequest("GET", "/transactions", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", w.Code)
+	}
+
+	if !strings.Contains(w.Body.String(), "事务列表") {
+		t.Error("expected page to contain '事务列表'")
+	}
+}
+
+// ============================================================================
+// AdminServer Start/Stop Tests
+// ============================================================================
+
+func TestAdminServer_StartStop(t *testing.T) {
+	store := newMockStore()
+	admin := NewAdmin(WithAdminStore(store))
+
+	// Use a random high port to avoid conflicts
+	server := NewAdminServer(
+		WithAddr(":0"), // Let the system assign a port
+		WithAdminImpl(admin),
+	)
+
+	t.Run("start and stop server", func(t *testing.T) {
+		// Start server in a goroutine
+		errCh := make(chan error, 1)
+		go func() {
+			errCh <- server.Start()
+		}()
+
+		// Give the server time to start
+		time.Sleep(100 * time.Millisecond)
+
+		// Stop the server
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		err := server.Stop(ctx)
+		if err != nil {
+			t.Errorf("unexpected error stopping server: %v", err)
+		}
+
+		// Check that Start returned (either nil or http.ErrServerClosed)
+		select {
+		case err := <-errCh:
+			if err != nil && err != http.ErrServerClosed {
+				t.Errorf("unexpected error from Start: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("Start did not return after Stop")
+		}
+	})
+
+	t.Run("stop already stopped server", func(t *testing.T) {
+		// Create a new server that was never started
+		server2 := NewAdminServer(WithAdminImpl(admin))
+
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+
+		// Should not error when stopping a server that was never started
+		err := server2.Stop(ctx)
+		if err != nil {
+			t.Errorf("unexpected error stopping non-running server: %v", err)
+		}
+	})
+
+	t.Run("start already running server", func(t *testing.T) {
+		server3 := NewAdminServer(
+			WithAddr(":0"),
+			WithAdminImpl(admin),
+		)
+
+		// Start server
+		go func() {
+			server3.Start()
+		}()
+
+		// Give the server time to start
+		time.Sleep(100 * time.Millisecond)
+
+		// Try to start again - should return error
+		err := server3.Start()
+		if err == nil {
+			t.Error("expected error when starting already running server")
+		}
+
+		// Clean up
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		server3.Stop(ctx)
 	})
 }

@@ -10,7 +10,7 @@ RTE 是一个用 Go 语言实现的可靠分布式事务引擎，采用 Saga 模
 - **幂等性** - 步骤级别幂等性检查，防止重复执行
 - **自动恢复** - 后台 Worker 自动恢复卡住/失败的事务
 - **可观测性** - Prometheus 指标 + OpenTelemetry 追踪
-- **管理接口** - 事务查询、强制完成/取消、手动重试
+- **管理接口** - Web 控制台 + REST API，事务查询、强制完成/取消、手动重试
 
 ## 安装
 
@@ -279,6 +279,96 @@ log.Printf("Scanned: %d, Processed: %d, Failed: %d",
 ```
 
 ## 管理接口
+
+RTE 提供两种管理方式：编程式 API 和 Web 管理控制台。
+
+### Web 管理控制台
+
+RTE 内置了一个功能完整的 Web 管理控制台，提供可视化的事务管理界面。
+
+**启动控制台：**
+
+```bash
+go run cmd/admin/main.go
+# 访问 http://localhost:8080
+```
+
+**功能页面：**
+
+| 页面 | 路径 | 功能 |
+|------|------|------|
+| 仪表盘 | `/` | 事务统计概览、状态分布 |
+| 事务列表 | `/transactions` | 事务查询、筛选、分页 |
+| 事务详情 | `/transactions/{txID}` | 事务完整信息、步骤执行详情 |
+| 恢复监控 | `/recovery` | Recovery Worker 状态和统计 |
+| 熔断器 | `/circuit-breakers` | 熔断器状态、手动重置 |
+| 事件日志 | `/events` | 实时事件流、事件筛选 |
+
+**集成到现有服务：**
+
+```go
+import "rte/admin"
+
+// 创建 Admin 实现
+adminImpl := admin.NewAdmin(
+    admin.WithAdminStore(store),
+    admin.WithAdminCoordinator(engine.Coordinator()),
+    admin.WithAdminEventBus(eventBus),
+)
+
+// 创建事件存储（用于事件日志页面）
+eventStore := admin.NewEventStore(1000) // 保留最近 1000 条事件
+eventBus.SubscribeAll(eventStore.EventHandler())
+
+// 创建 Admin Server
+server := admin.NewAdminServer(
+    admin.WithAddr(":8080"),
+    admin.WithAdminImpl(adminImpl),
+    admin.WithServerStore(store),
+    admin.WithServerBreaker(breaker),
+    admin.WithServerEventBus(eventBus),
+    admin.WithEventStore(eventStore),
+    admin.WithServerRecovery(recoveryWorker), // 可选
+)
+
+// 启动服务器
+go server.Start()
+defer server.Stop(ctx)
+```
+
+### REST API
+
+Web 控制台同时提供 REST API，可用于自动化集成：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/transactions` | 事务列表（支持筛选和分页） |
+| GET | `/api/transactions/{txID}` | 事务详情 |
+| POST | `/api/transactions/{txID}/force-complete` | 强制完成事务 |
+| POST | `/api/transactions/{txID}/force-cancel` | 强制取消事务 |
+| POST | `/api/transactions/{txID}/retry` | 重试事务 |
+| GET | `/api/stats` | 事务统计 |
+| GET | `/api/recovery/stats` | 恢复统计 |
+| GET | `/api/circuit-breakers` | 熔断器列表 |
+| POST | `/api/circuit-breakers/{service}/reset` | 重置熔断器 |
+| GET | `/api/events` | 事件列表 |
+
+**API 示例：**
+
+```bash
+# 获取失败的事务
+curl "http://localhost:8080/api/transactions?status=FAILED&page=1&page_size=20"
+
+# 强制完成事务
+curl -X POST "http://localhost:8080/api/transactions/tx-123/force-complete" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "manual intervention"}'
+
+# 获取统计信息
+curl "http://localhost:8080/api/stats"
+```
+
+### 编程式 API
 
 ```go
 import "rte/admin"
