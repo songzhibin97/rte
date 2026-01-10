@@ -9,6 +9,96 @@ import (
 	"rte/circuit"
 )
 
+func TestDefaultConfig(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.Namespace != "rte" {
+		t.Errorf("expected namespace 'rte', got '%s'", cfg.Namespace)
+	}
+	if cfg.Subsystem != "" {
+		t.Errorf("expected empty subsystem, got '%s'", cfg.Subsystem)
+	}
+	if cfg.Registry != prometheus.DefaultRegisterer {
+		t.Error("expected default registry")
+	}
+}
+
+func TestPrometheusMetrics_TxCompensated(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(Config{Namespace: "test", Registry: reg})
+
+	m.TxCompensated("transfer")
+	m.TxCompensated("transfer")
+	m.TxCompensated("deposit")
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() == "test_tx_compensated_total" {
+			found = true
+			metrics := mf.GetMetric()
+			if len(metrics) != 2 {
+				t.Errorf("expected 2 metric series, got %d", len(metrics))
+			}
+			// Check that transfer has count of 2
+			for _, metric := range metrics {
+				for _, label := range metric.GetLabel() {
+					if label.GetName() == "tx_type" && label.GetValue() == "transfer" {
+						if metric.GetCounter().GetValue() != 2 {
+							t.Errorf("expected transfer count 2, got %f", metric.GetCounter().GetValue())
+						}
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("tx_compensated_total metric not found")
+	}
+}
+
+func TestPrometheusMetrics_TxCompensationFailed(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	m := New(Config{Namespace: "test", Registry: reg})
+
+	m.TxCompensationFailed("transfer")
+	m.TxCompensationFailed("transfer")
+	m.TxCompensationFailed("withdrawal")
+
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("failed to gather metrics: %v", err)
+	}
+
+	found := false
+	for _, mf := range mfs {
+		if mf.GetName() == "test_tx_compensation_failed_total" {
+			found = true
+			metrics := mf.GetMetric()
+			if len(metrics) != 2 {
+				t.Errorf("expected 2 metric series, got %d", len(metrics))
+			}
+			// Check that transfer has count of 2
+			for _, metric := range metrics {
+				for _, label := range metric.GetLabel() {
+					if label.GetName() == "tx_type" && label.GetValue() == "transfer" {
+						if metric.GetCounter().GetValue() != 2 {
+							t.Errorf("expected transfer count 2, got %f", metric.GetCounter().GetValue())
+						}
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("tx_compensation_failed_total metric not found")
+	}
+}
+
 func TestPrometheusMetrics_TxStarted(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := New(Config{Namespace: "test", Registry: reg})

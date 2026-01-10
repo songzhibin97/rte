@@ -3,7 +3,9 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -23,6 +25,11 @@ type mockRedisClient struct {
 	locks       map[string]string // key -> token
 	setNXCalls  []setNXCall
 	scriptCalls []scriptCall
+
+	// Error injection for testing error paths
+	setNXError       error
+	evalError        error
+	extendShouldFail map[string]bool // keys that should fail extension
 }
 
 type setNXCall struct {
@@ -39,9 +46,10 @@ type scriptCall struct {
 
 func newMockRedisClient() *mockRedisClient {
 	return &mockRedisClient{
-		locks:       make(map[string]string),
-		setNXCalls:  make([]setNXCall, 0),
-		scriptCalls: make([]scriptCall, 0),
+		locks:            make(map[string]string),
+		setNXCalls:       make([]setNXCall, 0),
+		scriptCalls:      make([]scriptCall, 0),
+		extendShouldFail: make(map[string]bool),
 	}
 }
 
@@ -53,6 +61,13 @@ func (m *mockRedisClient) SetNX(ctx context.Context, key string, value interface
 	m.setNXCalls = append(m.setNXCalls, setNXCall{key: key, value: value.(string), ttl: expiration})
 
 	cmd := redis.NewBoolCmd(ctx)
+
+	// Inject error if configured
+	if m.setNXError != nil {
+		cmd.SetErr(m.setNXError)
+		return cmd
+	}
+
 	if _, exists := m.locks[key]; exists {
 		cmd.SetVal(false) // Lock already held
 	} else {
@@ -69,6 +84,12 @@ func (m *mockRedisClient) Eval(ctx context.Context, script string, keys []string
 
 	cmd := redis.NewCmd(ctx)
 
+	// Inject error if configured
+	if m.evalError != nil {
+		cmd.SetErr(m.evalError)
+		return cmd
+	}
+
 	if len(keys) == 0 {
 		cmd.SetVal(int64(0))
 		return cmd
@@ -80,11 +101,25 @@ func (m *mockRedisClient) Eval(ctx context.Context, script string, keys []string
 		token, _ = args[0].(string)
 	}
 
+	// Check if this key should fail extension
+	if m.extendShouldFail[key] {
+		cmd.SetVal(int64(0))
+		return cmd
+	}
+
 	// Check if this is a release or extend script
 	if storedToken, exists := m.locks[key]; exists && storedToken == token {
 		// Token matches - either delete (release) or extend
-		delete(m.locks, key)
-		cmd.SetVal(int64(1))
+		// For extend, we don't delete the lock, just return success
+		// Check if this is an extend operation (has TTL arg)
+		if len(args) > 1 {
+			// This is an extend operation - keep the lock
+			cmd.SetVal(int64(1))
+		} else {
+			// This is a release operation - delete the lock
+			delete(m.locks, key)
+			cmd.SetVal(int64(1))
+		}
 	} else {
 		cmd.SetVal(int64(0))
 	}
@@ -260,6 +295,258 @@ func TestLockHandle_Extend_NoLocksHeld(t *testing.T) {
 	err := handle.Extend(context.Background(), 30*time.Second)
 	if err == nil {
 		t.Fatal("expected error when no locks held")
+	}
+}
+
+func TestLockHandle_Extend_Success(t *testing.T) {
+	mock := newMockRedisClient()
+	locker := NewRedisLocker(mock)
+
+	handle, err := locker.Acquire(context.Background(), []string{"key1", "key2"}, 30*time.Second)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	// Extend the locks
+	err = handle.Extend(context.Background(), 60*time.Second)
+	if err != nil {
+		t.Fatalf("Extend failed: %v", err)
+	}
+
+	// Verify locks are still held
+	keys := handle.Keys()
+	if len(keys) != 2 {
+		t.Errorf("expected 2 keys after extend, got %d", len(keys))
+	}
+}
+
+func TestLockHandle_Extend_PartialFailure(t *testing.T) {
+	mock := newMockRedisClient()
+	locker := NewRedisLocker(mock)
+
+	handle, err := locker.Acquire(context.Background(), []string{"key1", "key2"}, 30*time.Second)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	// Mark key2 to fail extension (simulating lock expired or stolen)
+	mock.extendShouldFail["rte:lock:key2"] = true
+
+	// Extend should return error for partial failure
+	err = handle.Extend(context.Background(), 60*time.Second)
+	if err == nil {
+		t.Fatal("expected error when extension partially fails")
+	}
+
+	// Error should mention the failed key
+	if !errors.Is(err, errors.Unwrap(err)) && err.Error() == "" {
+		t.Errorf("expected error message, got empty")
+	}
+}
+
+func TestLockHandle_Extend_AllFail(t *testing.T) {
+	mock := newMockRedisClient()
+	locker := NewRedisLocker(mock)
+
+	handle, err := locker.Acquire(context.Background(), []string{"key1", "key2"}, 30*time.Second)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	// Mark all keys to fail extension
+	mock.extendShouldFail["rte:lock:key1"] = true
+	mock.extendShouldFail["rte:lock:key2"] = true
+
+	// Extend should return error
+	err = handle.Extend(context.Background(), 60*time.Second)
+	if err == nil {
+		t.Fatal("expected error when all extensions fail")
+	}
+}
+
+func TestLockHandle_Extend_EvalError(t *testing.T) {
+	mock := newMockRedisClient()
+	locker := NewRedisLocker(mock)
+
+	handle, err := locker.Acquire(context.Background(), []string{"key1"}, 30*time.Second)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	// Inject eval error
+	mock.evalError = errors.New("redis connection error")
+
+	// Extend should return error
+	err = handle.Extend(context.Background(), 60*time.Second)
+	if err == nil {
+		t.Fatal("expected error when eval fails")
+	}
+}
+
+func TestLockHandle_ExtendSingle_LockNotHeld(t *testing.T) {
+	mock := newMockRedisClient()
+	locker := NewRedisLocker(mock)
+
+	handle, err := locker.Acquire(context.Background(), []string{"key1"}, 30*time.Second)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	h := handle.(*redisLockHandle)
+
+	// Manually delete the lock from mock to simulate expiration
+	mock.mu.Lock()
+	delete(mock.locks, "rte:lock:key1")
+	mock.mu.Unlock()
+
+	// extendSingle should fail because lock is not held
+	err = h.extendSingle(context.Background(), "rte:lock:key1", 60*time.Second)
+	if err == nil {
+		t.Fatal("expected error when lock not held")
+	}
+	if err.Error() != "lock not held or expired" {
+		t.Errorf("expected 'lock not held or expired' error, got: %v", err)
+	}
+}
+
+func TestLockHandle_ExtendSingle_Success(t *testing.T) {
+	mock := newMockRedisClient()
+	locker := NewRedisLocker(mock)
+
+	handle, err := locker.Acquire(context.Background(), []string{"key1"}, 30*time.Second)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	h := handle.(*redisLockHandle)
+
+	// extendSingle should succeed
+	err = h.extendSingle(context.Background(), "rte:lock:key1", 60*time.Second)
+	if err != nil {
+		t.Fatalf("extendSingle failed: %v", err)
+	}
+}
+
+func TestLockHandle_ExtendSingle_EvalError(t *testing.T) {
+	mock := newMockRedisClient()
+	locker := NewRedisLocker(mock)
+
+	handle, err := locker.Acquire(context.Background(), []string{"key1"}, 30*time.Second)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	h := handle.(*redisLockHandle)
+
+	// Inject eval error
+	mock.evalError = errors.New("redis connection error")
+
+	// extendSingle should return the error
+	err = h.extendSingle(context.Background(), "rte:lock:key1", 60*time.Second)
+	if err == nil {
+		t.Fatal("expected error when eval fails")
+	}
+}
+
+// ============================================================================
+// Unit Tests: tryAcquire Error Paths
+// ============================================================================
+
+func TestRedisLocker_TryAcquire_Error(t *testing.T) {
+	mock := newMockRedisClient()
+	mock.setNXError = errors.New("redis connection error")
+
+	locker := NewRedisLocker(mock)
+
+	_, err := locker.Acquire(context.Background(), []string{"key1"}, 30*time.Second)
+	if err == nil {
+		t.Fatal("expected error when SetNX fails")
+	}
+
+	// Error should wrap the original error
+	if !strings.Contains(err.Error(), "redis connection error") {
+		t.Errorf("expected error to contain 'redis connection error', got: %v", err)
+	}
+}
+
+func TestRedisLocker_TryAcquire_ErrorAfterPartialSuccess(t *testing.T) {
+	// Create a mock that fails on the second SetNX call
+	errorMock := &errorOnSecondCallMock{
+		mockRedisClient: newMockRedisClient(),
+		callCount:       0,
+		failOnCall:      2,
+	}
+
+	locker := NewRedisLocker(errorMock)
+
+	_, err := locker.Acquire(context.Background(), []string{"key1", "key2"}, 30*time.Second)
+	if err == nil {
+		t.Fatal("expected error when SetNX fails after partial success")
+	}
+}
+
+// errorOnSecondCallMock is a mock that fails on a specific call number
+type errorOnSecondCallMock struct {
+	*mockRedisClient
+	callCount  int
+	failOnCall int
+	mu         sync.Mutex
+}
+
+func (m *errorOnSecondCallMock) SetNX(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.BoolCmd {
+	m.mu.Lock()
+	m.callCount++
+	currentCall := m.callCount
+	m.mu.Unlock()
+
+	cmd := redis.NewBoolCmd(ctx)
+	if currentCall >= m.failOnCall {
+		cmd.SetErr(errors.New("redis connection error"))
+		return cmd
+	}
+
+	// Delegate to the underlying mock
+	return m.mockRedisClient.SetNX(ctx, key, value, expiration)
+}
+
+// ============================================================================
+// Unit Tests: Release Error Paths
+// ============================================================================
+
+func TestLockHandle_Release_EvalError(t *testing.T) {
+	mock := newMockRedisClient()
+	locker := NewRedisLocker(mock)
+
+	handle, err := locker.Acquire(context.Background(), []string{"key1", "key2"}, 30*time.Second)
+	if err != nil {
+		t.Fatalf("Acquire failed: %v", err)
+	}
+
+	// Inject eval error for release
+	mock.evalError = errors.New("redis connection error")
+
+	// Release should return error
+	err = handle.Release(context.Background())
+	if err == nil {
+		t.Fatal("expected error when release fails")
+	}
+
+	// Keys should be cleared even on error
+	keys := handle.Keys()
+	if keys != nil {
+		t.Errorf("expected nil keys after release, got %v", keys)
+	}
+}
+
+func TestLockHandle_Release_EmptyAcquired(t *testing.T) {
+	handle := &redisLockHandle{
+		acquired: nil,
+	}
+
+	// Release with no acquired locks should return nil
+	err := handle.Release(context.Background())
+	if err != nil {
+		t.Fatalf("expected nil error for empty release, got: %v", err)
 	}
 }
 

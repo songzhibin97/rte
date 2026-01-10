@@ -3000,7 +3000,7 @@ func TestRecovery_LockedTransactionDetection(t *testing.T) {
 }
 
 // ============================================================================
-// Task 5.2: Transaction Recovery Tests
+// Transaction Recovery Tests
 // ============================================================================
 
 // TestRecovery_ExecutingStateRecovery tests recovery of transactions stuck in EXECUTING state
@@ -3361,7 +3361,7 @@ func TestRecovery_MaxRetriesExceededNotRetryable(t *testing.T) {
 }
 
 // ============================================================================
-// Task 5.3: Recovery Consistency Property-Based Test
+// Recovery Consistency Property-Based Test
 // Property 7: Recovery Consistency
 // ============================================================================
 

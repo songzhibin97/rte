@@ -12,7 +12,7 @@ import (
 )
 
 // ============================================================================
-// Integration Tests - Task 17.1: Complete Transaction Flow
+// Integration Tests - Complete Transaction Flow
 // ============================================================================
 
 // TestIntegration_NormalExecutionFlow tests the complete normal execution flow
@@ -528,7 +528,7 @@ func TestIntegration_CompensationFailure(t *testing.T) {
 }
 
 // ============================================================================
-// Integration Tests - Task 17.2: Recovery Scenarios
+// Integration Tests - Recovery Scenarios
 // ============================================================================
 
 // TestIntegration_StuckTransactionRecovery tests recovery of stuck transactions
@@ -830,7 +830,7 @@ func (s *integrationMockStore) GetRetryableTransactions(ctx context.Context, max
 }
 
 // ============================================================================
-// Integration Tests - Task 17.3: Concurrent Scenarios
+// Integration Tests - Concurrent Scenarios
 // ============================================================================
 
 // TestIntegration_ConcurrentTransactionExecution tests concurrent transaction execution

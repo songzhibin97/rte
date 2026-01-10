@@ -760,3 +760,603 @@ func TestProperty_CompensationCompleteness(t *testing.T) {
 		}
 	})
 }
+
+// ============================================================================
+// Unit Tests for Resume function
+// Tests LOCKED, EXECUTING, FAILED (retryable and non-retryable), and default status branches
+// ============================================================================
+
+func TestResume_LockedStatus(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := NewCoordinator(
+		WithStore(store),
+		WithLocker(locker),
+		WithBreaker(breaker),
+		WithEventBus(eventBus),
+		WithCoordinatorConfig(Config{
+			LockTTL:          30 * time.Second,
+			LockExtendPeriod: 10 * time.Second,
+			StepTimeout:      5 * time.Second,
+			TxTimeout:        30 * time.Second,
+			MaxRetries:       3,
+			RetryInterval:    100 * time.Millisecond,
+			IdempotencyTTL:   24 * time.Hour,
+		}),
+	)
+
+	// Register a simple step
+	step := newTestStep("step1")
+	step.executeFunc = func(ctx context.Context, txCtx *TxContext) error {
+		txCtx.SetOutput("result", "resumed")
+		return nil
+	}
+	coord.RegisterStep(step)
+
+	// Create a transaction in LOCKED status
+	storeTx := NewStoreTx("test-tx", "test-type", []string{"step1"})
+	storeTx.Status = TxStatusLocked
+	storeTx.Context = &StoreTxContext{
+		TxID:   "test-tx",
+		TxType: "test-type",
+		Input:  make(map[string]any),
+		Output: make(map[string]any),
+	}
+	store.CreateTransaction(context.Background(), storeTx)
+
+	// Create step record
+	stepRecord := NewStoreStepRecord("test-tx", 0, "step1")
+	store.CreateStep(context.Background(), stepRecord)
+
+	// Resume the transaction
+	result, err := coord.Resume(context.Background(), storeTx)
+	if err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	if result.Status != TxStatusCompleted {
+		t.Errorf("expected COMPLETED, got %s", result.Status)
+	}
+}
+
+func TestResume_ExecutingStatus(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := NewCoordinator(
+		WithStore(store),
+		WithLocker(locker),
+		WithBreaker(breaker),
+		WithEventBus(eventBus),
+		WithCoordinatorConfig(Config{
+			LockTTL:          30 * time.Second,
+			LockExtendPeriod: 10 * time.Second,
+			StepTimeout:      5 * time.Second,
+			TxTimeout:        30 * time.Second,
+			MaxRetries:       3,
+			RetryInterval:    100 * time.Millisecond,
+			IdempotencyTTL:   24 * time.Hour,
+		}),
+	)
+
+	// Register steps
+	step1 := newTestStep("step1")
+	step1.executeFunc = func(ctx context.Context, txCtx *TxContext) error {
+		return nil
+	}
+	coord.RegisterStep(step1)
+
+	step2 := newTestStep("step2")
+	step2.executeFunc = func(ctx context.Context, txCtx *TxContext) error {
+		txCtx.SetOutput("result", "step2-done")
+		return nil
+	}
+	coord.RegisterStep(step2)
+
+	// Create a transaction in EXECUTING status at step 1
+	storeTx := NewStoreTx("test-tx", "test-type", []string{"step1", "step2"})
+	storeTx.Status = TxStatusExecuting
+	storeTx.CurrentStep = 1 // Already completed step 0
+	storeTx.Context = &StoreTxContext{
+		TxID:      "test-tx",
+		TxType:    "test-type",
+		StepIndex: 1,
+		Input:     make(map[string]any),
+		Output:    make(map[string]any),
+	}
+	store.CreateTransaction(context.Background(), storeTx)
+
+	// Create step records
+	step1Record := NewStoreStepRecord("test-tx", 0, "step1")
+	step1Record.Status = StepStatusCompleted
+	store.CreateStep(context.Background(), step1Record)
+
+	step2Record := NewStoreStepRecord("test-tx", 1, "step2")
+	store.CreateStep(context.Background(), step2Record)
+
+	// Resume the transaction
+	result, err := coord.Resume(context.Background(), storeTx)
+	if err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	if result.Status != TxStatusCompleted {
+		t.Errorf("expected COMPLETED, got %s", result.Status)
+	}
+}
+
+func TestResume_FailedStatus_Retryable(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := NewCoordinator(
+		WithStore(store),
+		WithLocker(locker),
+		WithBreaker(breaker),
+		WithEventBus(eventBus),
+		WithCoordinatorConfig(Config{
+			LockTTL:          30 * time.Second,
+			LockExtendPeriod: 10 * time.Second,
+			StepTimeout:      5 * time.Second,
+			TxTimeout:        30 * time.Second,
+			MaxRetries:       3,
+			RetryInterval:    100 * time.Millisecond,
+			IdempotencyTTL:   24 * time.Hour,
+		}),
+	)
+
+	// Register a step that succeeds on retry
+	retryCount := 0
+	step := newTestStep("step1")
+	step.executeFunc = func(ctx context.Context, txCtx *TxContext) error {
+		retryCount++
+		txCtx.SetOutput("result", "success-on-retry")
+		return nil
+	}
+	coord.RegisterStep(step)
+
+	// Create a transaction in FAILED status that can be retried
+	storeTx := NewStoreTx("test-tx", "test-type", []string{"step1"})
+	storeTx.Status = TxStatusFailed
+	storeTx.RetryCount = 0
+	storeTx.MaxRetries = 3
+	storeTx.ErrorMsg = "previous failure"
+	storeTx.Context = &StoreTxContext{
+		TxID:   "test-tx",
+		TxType: "test-type",
+		Input:  make(map[string]any),
+		Output: make(map[string]any),
+	}
+	store.CreateTransaction(context.Background(), storeTx)
+
+	// Create step record
+	stepRecord := NewStoreStepRecord("test-tx", 0, "step1")
+	stepRecord.Status = StepStatusFailed
+	store.CreateStep(context.Background(), stepRecord)
+
+	// Resume the transaction (should retry)
+	result, err := coord.Resume(context.Background(), storeTx)
+	if err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	if result.Status != TxStatusCompleted {
+		t.Errorf("expected COMPLETED after retry, got %s", result.Status)
+	}
+
+	if retryCount != 1 {
+		t.Errorf("expected step to be executed once on retry, got %d", retryCount)
+	}
+}
+
+func TestResume_FailedStatus_NotRetryable_WithCompensation(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := NewCoordinator(
+		WithStore(store),
+		WithLocker(locker),
+		WithBreaker(breaker),
+		WithEventBus(eventBus),
+		WithCoordinatorConfig(Config{
+			LockTTL:          30 * time.Second,
+			LockExtendPeriod: 10 * time.Second,
+			StepTimeout:      5 * time.Second,
+			TxTimeout:        30 * time.Second,
+			MaxRetries:       3,
+			RetryInterval:    100 * time.Millisecond,
+			IdempotencyTTL:   24 * time.Hour,
+		}),
+	)
+
+	compensated := false
+
+	// Register steps
+	step1 := newTestStep("step1")
+	step1.supportsComp = true
+	step1.executeFunc = func(ctx context.Context, txCtx *TxContext) error {
+		return nil
+	}
+	step1.compensateFunc = func(ctx context.Context, txCtx *TxContext) error {
+		compensated = true
+		return nil
+	}
+	coord.RegisterStep(step1)
+
+	step2 := newTestStep("step2")
+	step2.executeFunc = func(ctx context.Context, txCtx *TxContext) error {
+		return errMockFailure
+	}
+	coord.RegisterStep(step2)
+
+	// Create a transaction in FAILED status that cannot be retried (max retries exceeded)
+	storeTx := NewStoreTx("test-tx", "test-type", []string{"step1", "step2"})
+	storeTx.Status = TxStatusFailed
+	storeTx.RetryCount = 3 // Max retries reached
+	storeTx.MaxRetries = 3
+	storeTx.CurrentStep = 1 // Failed at step 1, step 0 completed
+	storeTx.ErrorMsg = "step2 failed"
+	storeTx.Context = &StoreTxContext{
+		TxID:   "test-tx",
+		TxType: "test-type",
+		Input:  make(map[string]any),
+		Output: make(map[string]any),
+	}
+	store.CreateTransaction(context.Background(), storeTx)
+
+	// Create step records
+	step1Record := NewStoreStepRecord("test-tx", 0, "step1")
+	step1Record.Status = StepStatusCompleted
+	store.CreateStep(context.Background(), step1Record)
+
+	step2Record := NewStoreStepRecord("test-tx", 1, "step2")
+	step2Record.Status = StepStatusFailed
+	store.CreateStep(context.Background(), step2Record)
+
+	// Resume the transaction (should trigger compensation)
+	result, _ := coord.Resume(context.Background(), storeTx)
+
+	if result.Status != TxStatusCompensated {
+		t.Errorf("expected COMPENSATED, got %s", result.Status)
+	}
+
+	if !compensated {
+		t.Error("expected step1 to be compensated")
+	}
+}
+
+func TestResume_FailedStatus_NotRetryable_NoCompensation(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := NewCoordinator(
+		WithStore(store),
+		WithLocker(locker),
+		WithBreaker(breaker),
+		WithEventBus(eventBus),
+		WithCoordinatorConfig(Config{
+			LockTTL:          30 * time.Second,
+			LockExtendPeriod: 10 * time.Second,
+			StepTimeout:      5 * time.Second,
+			TxTimeout:        30 * time.Second,
+			MaxRetries:       3,
+			RetryInterval:    100 * time.Millisecond,
+			IdempotencyTTL:   24 * time.Hour,
+		}),
+	)
+
+	// Register a step without compensation support
+	step := newTestStep("step1")
+	step.supportsComp = false
+	step.executeFunc = func(ctx context.Context, txCtx *TxContext) error {
+		return errMockFailure
+	}
+	coord.RegisterStep(step)
+
+	// Create a transaction in FAILED status that cannot be retried
+	storeTx := NewStoreTx("test-tx", "test-type", []string{"step1"})
+	storeTx.Status = TxStatusFailed
+	storeTx.RetryCount = 3 // Max retries reached
+	storeTx.MaxRetries = 3
+	storeTx.CurrentStep = 0
+	storeTx.ErrorMsg = "step1 failed"
+	storeTx.Context = &StoreTxContext{
+		TxID:   "test-tx",
+		TxType: "test-type",
+		Input:  make(map[string]any),
+		Output: make(map[string]any),
+	}
+	store.CreateTransaction(context.Background(), storeTx)
+
+	// Create step record
+	stepRecord := NewStoreStepRecord("test-tx", 0, "step1")
+	stepRecord.Status = StepStatusFailed
+	store.CreateStep(context.Background(), stepRecord)
+
+	// Resume the transaction (should remain FAILED)
+	result, _ := coord.Resume(context.Background(), storeTx)
+
+	if result.Status != TxStatusFailed {
+		t.Errorf("expected FAILED, got %s", result.Status)
+	}
+}
+
+func TestResume_DefaultStatus_Completed(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := NewCoordinator(
+		WithStore(store),
+		WithLocker(locker),
+		WithBreaker(breaker),
+		WithEventBus(eventBus),
+	)
+
+	// Create a transaction in COMPLETED status (terminal state)
+	storeTx := NewStoreTx("test-tx", "test-type", []string{"step1"})
+	storeTx.Status = TxStatusCompleted
+	storeTx.Context = &StoreTxContext{
+		TxID:   "test-tx",
+		TxType: "test-type",
+		Input:  make(map[string]any),
+		Output: make(map[string]any),
+	}
+	store.CreateTransaction(context.Background(), storeTx)
+
+	// Resume should return immediately with current status
+	result, err := coord.Resume(context.Background(), storeTx)
+	if err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	if result.Status != TxStatusCompleted {
+		t.Errorf("expected COMPLETED, got %s", result.Status)
+	}
+}
+
+func TestResume_DefaultStatus_Compensated(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := NewCoordinator(
+		WithStore(store),
+		WithLocker(locker),
+		WithBreaker(breaker),
+		WithEventBus(eventBus),
+	)
+
+	// Create a transaction in COMPENSATED status (terminal state)
+	storeTx := NewStoreTx("test-tx", "test-type", []string{"step1"})
+	storeTx.Status = TxStatusCompensated
+	storeTx.Context = &StoreTxContext{
+		TxID:   "test-tx",
+		TxType: "test-type",
+		Input:  make(map[string]any),
+		Output: make(map[string]any),
+	}
+	store.CreateTransaction(context.Background(), storeTx)
+
+	// Resume should return immediately with current status
+	result, err := coord.Resume(context.Background(), storeTx)
+	if err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	if result.Status != TxStatusCompensated {
+		t.Errorf("expected COMPENSATED, got %s", result.Status)
+	}
+}
+
+func TestResume_DefaultStatus_Cancelled(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := NewCoordinator(
+		WithStore(store),
+		WithLocker(locker),
+		WithBreaker(breaker),
+		WithEventBus(eventBus),
+	)
+
+	// Create a transaction in CANCELLED status (terminal state)
+	storeTx := NewStoreTx("test-tx", "test-type", []string{"step1"})
+	storeTx.Status = TxStatusCancelled
+	storeTx.Context = &StoreTxContext{
+		TxID:   "test-tx",
+		TxType: "test-type",
+		Input:  make(map[string]any),
+		Output: make(map[string]any),
+	}
+	store.CreateTransaction(context.Background(), storeTx)
+
+	// Resume should return immediately with current status
+	result, err := coord.Resume(context.Background(), storeTx)
+	if err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	if result.Status != TxStatusCancelled {
+		t.Errorf("expected CANCELLED, got %s", result.Status)
+	}
+}
+
+func TestResume_DefaultStatus_Created(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := NewCoordinator(
+		WithStore(store),
+		WithLocker(locker),
+		WithBreaker(breaker),
+		WithEventBus(eventBus),
+	)
+
+	// Create a transaction in CREATED status (not handled by Resume)
+	storeTx := NewStoreTx("test-tx", "test-type", []string{"step1"})
+	storeTx.Status = TxStatusCreated
+	storeTx.Context = &StoreTxContext{
+		TxID:   "test-tx",
+		TxType: "test-type",
+		Input:  make(map[string]any),
+		Output: make(map[string]any),
+	}
+	store.CreateTransaction(context.Background(), storeTx)
+
+	// Resume should return immediately with current status (default case)
+	result, err := coord.Resume(context.Background(), storeTx)
+	if err != nil {
+		t.Fatalf("Resume failed: %v", err)
+	}
+
+	if result.Status != TxStatusCreated {
+		t.Errorf("expected CREATED, got %s", result.Status)
+	}
+}
+
+// ============================================================================
+// Tests for noOpLockHandle - Coverage improvement
+// ============================================================================
+
+func TestNoOpLockHandle_Extend(t *testing.T) {
+	handle := &noOpLockHandle{}
+	err := handle.Extend(context.Background(), 30*time.Second)
+	if err != nil {
+		t.Errorf("expected nil error, got %v", err)
+	}
+}
+
+func TestNoOpLockHandle_Keys(t *testing.T) {
+	handle := &noOpLockHandle{}
+	keys := handle.Keys()
+	if keys != nil {
+		t.Errorf("expected nil keys, got %v", keys)
+	}
+}
+
+// ============================================================================
+// Additional tests for coordinator coverage improvement
+// ============================================================================
+
+func TestCoordinator_ExecuteWithNoLocks(t *testing.T) {
+	store := newMockStore()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	// Create coordinator without locker to use noOpLockHandle
+	coord := NewCoordinator(
+		WithStore(store),
+		WithBreaker(breaker),
+		WithEventBus(eventBus),
+		WithCoordinatorConfig(Config{
+			LockTTL:          30 * time.Second,
+			LockExtendPeriod: 10 * time.Second,
+			StepTimeout:      5 * time.Second,
+			TxTimeout:        30 * time.Second,
+			MaxRetries:       3,
+			RetryInterval:    100 * time.Millisecond,
+			IdempotencyTTL:   24 * time.Hour,
+		}),
+	)
+
+	// Register a simple step
+	step := newTestStep("step1")
+	step.executeFunc = func(ctx context.Context, txCtx *TxContext) error {
+		txCtx.SetOutput("result", "success")
+		return nil
+	}
+	coord.RegisterStep(step)
+
+	// Create transaction without lock keys
+	tx, err := NewTransaction("test-tx").
+		WithStepRegistry(coord).
+		AddStep("step1").
+		Build()
+	if err != nil {
+		t.Fatalf("failed to build transaction: %v", err)
+	}
+
+	result, err := coord.Execute(context.Background(), tx)
+	if err != nil {
+		t.Fatalf("failed to execute transaction: %v", err)
+	}
+
+	if result.Status != TxStatusCompleted {
+		t.Errorf("expected status COMPLETED, got %s", result.Status)
+	}
+}
+
+func TestCoordinator_ExecuteWithContextCancellation(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := NewCoordinator(
+		WithStore(store),
+		WithLocker(locker),
+		WithBreaker(breaker),
+		WithEventBus(eventBus),
+		WithCoordinatorConfig(Config{
+			LockTTL:          30 * time.Second,
+			LockExtendPeriod: 10 * time.Second,
+			StepTimeout:      5 * time.Second,
+			TxTimeout:        30 * time.Second,
+			MaxRetries:       3,
+			RetryInterval:    100 * time.Millisecond,
+			IdempotencyTTL:   24 * time.Hour,
+		}),
+	)
+
+	// Register a step that blocks
+	step := newTestStep("blocking-step")
+	step.executeFunc = func(ctx context.Context, txCtx *TxContext) error {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10 * time.Second):
+			return nil
+		}
+	}
+	coord.RegisterStep(step)
+
+	// Create transaction
+	tx, _ := NewTransaction("test-tx").
+		WithStepRegistry(coord).
+		AddStep("blocking-step").
+		Build()
+
+	// Create a context that will be cancelled
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Cancel after a short delay
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+
+	result, _ := coord.Execute(ctx, tx)
+
+	// Transaction should fail due to context cancellation
+	if result.Status != TxStatusFailed {
+		t.Errorf("expected status FAILED due to cancellation, got %s", result.Status)
+	}
+}

@@ -670,3 +670,601 @@ func TestMySQLStore_DeleteExpiredIdempotency(t *testing.T) {
 		t.Errorf("expected 5 deleted, got %d", count)
 	}
 }
+
+// ============================================================================
+// GetPendingTransactions Tests (Requirements 4.2)
+// ============================================================================
+
+func TestMySQLStore_GetPendingTransactions(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "tx_type", "status", "current_step", "total_steps", "step_names",
+		"lock_keys", "context", "error_msg", "retry_count", "max_retries", "version",
+		"created_at", "updated_at", "locked_at", "completed_at", "timeout_at",
+	}).AddRow(
+		1, "tx-pending", "test_type", rte.TxStatusCreated, 0, 2, `["step1","step2"]`,
+		`[]`, `{"tx_id":"tx-pending"}`, "", 0, 3, 0,
+		now.Add(-10*time.Minute), now.Add(-10*time.Minute), nil, nil, nil,
+	)
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE status = \\? AND updated_at < \\?").
+		WithArgs(rte.TxStatusCreated, sqlmock.AnyArg()).
+		WillReturnRows(rows)
+
+	txs, err := s.GetPendingTransactions(context.Background(), 5*time.Minute)
+	if err != nil {
+		t.Errorf("GetPendingTransactions failed: %v", err)
+	}
+
+	if len(txs) != 1 {
+		t.Errorf("expected 1 pending transaction, got %d", len(txs))
+	}
+
+	if txs[0].TxID != "tx-pending" {
+		t.Errorf("expected TxID 'tx-pending', got '%s'", txs[0].TxID)
+	}
+
+	if txs[0].Status != rte.TxStatusCreated {
+		t.Errorf("expected status CREATED, got %s", txs[0].Status)
+	}
+}
+
+func TestMySQLStore_GetPendingTransactions_Empty(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "tx_type", "status", "current_step", "total_steps", "step_names",
+		"lock_keys", "context", "error_msg", "retry_count", "max_retries", "version",
+		"created_at", "updated_at", "locked_at", "completed_at", "timeout_at",
+	})
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE status = \\? AND updated_at < \\?").
+		WithArgs(rte.TxStatusCreated, sqlmock.AnyArg()).
+		WillReturnRows(rows)
+
+	txs, err := s.GetPendingTransactions(context.Background(), 5*time.Minute)
+	if err != nil {
+		t.Errorf("GetPendingTransactions failed: %v", err)
+	}
+
+	if len(txs) != 0 {
+		t.Errorf("expected 0 pending transactions, got %d", len(txs))
+	}
+}
+
+func TestMySQLStore_GetPendingTransactions_QueryError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE status = \\? AND updated_at < \\?").
+		WithArgs(rte.TxStatusCreated, sqlmock.AnyArg()).
+		WillReturnError(errors.New("database connection error"))
+
+	_, err := s.GetPendingTransactions(context.Background(), 5*time.Minute)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+// ============================================================================
+// CreateTransaction Error Path Tests (Requirements 4.3)
+// ============================================================================
+
+func TestMySQLStore_CreateTransaction_ExecError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	tx := createTestTransaction("tx-123", "test_type")
+
+	mock.ExpectExec("INSERT INTO rte_transactions").
+		WillReturnError(errors.New("database connection error"))
+
+	err := s.CreateTransaction(context.Background(), tx)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_CreateTransaction_LastInsertIdError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	tx := createTestTransaction("tx-123", "test_type")
+
+	mock.ExpectExec("INSERT INTO rte_transactions").
+		WillReturnResult(sqlmock.NewErrorResult(errors.New("last insert id error")))
+
+	err := s.CreateTransaction(context.Background(), tx)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ============================================================================
+// UpdateTransaction Error Path Tests (Requirements 4.3)
+// ============================================================================
+
+func TestMySQLStore_UpdateTransaction_ExecError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	tx := createTestTransaction("tx-123", "test_type")
+	tx.Version = 1
+
+	mock.ExpectExec("UPDATE rte_transactions SET").
+		WillReturnError(errors.New("database connection error"))
+
+	err := s.UpdateTransaction(context.Background(), tx)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_UpdateTransaction_RowsAffectedError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	tx := createTestTransaction("tx-123", "test_type")
+	tx.Version = 1
+
+	mock.ExpectExec("UPDATE rte_transactions SET").
+		WillReturnResult(sqlmock.NewErrorResult(errors.New("rows affected error")))
+
+	err := s.UpdateTransaction(context.Background(), tx)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestMySQLStore_UpdateTransaction_TransactionExistsCheckError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	tx := createTestTransaction("tx-123", "test_type")
+	tx.Version = 1
+
+	mock.ExpectExec("UPDATE rte_transactions SET").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM rte_transactions WHERE tx_id = ?").
+		WithArgs("tx-123").
+		WillReturnError(errors.New("database error"))
+
+	err := s.UpdateTransaction(context.Background(), tx)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+// ============================================================================
+// GetTransaction Error Path Tests (Requirements 4.4)
+// ============================================================================
+
+func TestMySQLStore_GetTransaction_QueryError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE tx_id = ?").
+		WithArgs("tx-123").
+		WillReturnError(errors.New("database connection error"))
+
+	_, err := s.GetTransaction(context.Background(), "tx-123")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_GetTransaction_UnmarshalStepNamesError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "tx_type", "status", "current_step", "total_steps", "step_names",
+		"lock_keys", "context", "error_msg", "retry_count", "max_retries", "version",
+		"created_at", "updated_at", "locked_at", "completed_at", "timeout_at",
+	}).AddRow(
+		1, "tx-123", "test_type", rte.TxStatusCreated, 0, 2, `invalid json`,
+		`["key1"]`, `{"tx_id":"tx-123"}`, "", 0, 3, 0,
+		now, now, nil, nil, nil,
+	)
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE tx_id = ?").
+		WithArgs("tx-123").
+		WillReturnRows(rows)
+
+	_, err := s.GetTransaction(context.Background(), "tx-123")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestMySQLStore_GetTransaction_UnmarshalLockKeysError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "tx_type", "status", "current_step", "total_steps", "step_names",
+		"lock_keys", "context", "error_msg", "retry_count", "max_retries", "version",
+		"created_at", "updated_at", "locked_at", "completed_at", "timeout_at",
+	}).AddRow(
+		1, "tx-123", "test_type", rte.TxStatusCreated, 0, 2, `["step1","step2"]`,
+		`invalid json`, `{"tx_id":"tx-123"}`, "", 0, 3, 0,
+		now, now, nil, nil, nil,
+	)
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE tx_id = ?").
+		WithArgs("tx-123").
+		WillReturnRows(rows)
+
+	_, err := s.GetTransaction(context.Background(), "tx-123")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestMySQLStore_GetTransaction_UnmarshalContextError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "tx_type", "status", "current_step", "total_steps", "step_names",
+		"lock_keys", "context", "error_msg", "retry_count", "max_retries", "version",
+		"created_at", "updated_at", "locked_at", "completed_at", "timeout_at",
+	}).AddRow(
+		1, "tx-123", "test_type", rte.TxStatusCreated, 0, 2, `["step1","step2"]`,
+		`["key1"]`, `invalid json`, "", 0, 3, 0,
+		now, now, nil, nil, nil,
+	)
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE tx_id = ?").
+		WithArgs("tx-123").
+		WillReturnRows(rows)
+
+	_, err := s.GetTransaction(context.Background(), "tx-123")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ============================================================================
+// CreateStep Error Path Tests (Requirements 4.5)
+// ============================================================================
+
+func TestMySQLStore_CreateStep_DuplicateKey(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	step := createTestStep("tx-123", 0, "step1")
+
+	mock.ExpectExec("INSERT INTO rte_steps").
+		WillReturnError(errors.New("Duplicate entry 'tx-123-0' for key 'tx_id_step_index'"))
+
+	err := s.CreateStep(context.Background(), step)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_CreateStep_ExecError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	step := createTestStep("tx-123", 0, "step1")
+
+	mock.ExpectExec("INSERT INTO rte_steps").
+		WillReturnError(errors.New("database connection error"))
+
+	err := s.CreateStep(context.Background(), step)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_CreateStep_LastInsertIdError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	step := createTestStep("tx-123", 0, "step1")
+
+	mock.ExpectExec("INSERT INTO rte_steps").
+		WillReturnResult(sqlmock.NewErrorResult(errors.New("last insert id error")))
+
+	err := s.CreateStep(context.Background(), step)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+// ============================================================================
+// isDuplicateKeyError Tests (Requirements 4.5)
+// ============================================================================
+
+func TestIsDuplicateKeyError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+		{
+			name:     "duplicate entry error",
+			err:      errors.New("Duplicate entry 'tx-123' for key 'tx_id'"),
+			expected: true,
+		},
+		{
+			name:     "error code 1062",
+			err:      errors.New("Error 1062: Duplicate entry"),
+			expected: true,
+		},
+		{
+			name:     "other error",
+			err:      errors.New("connection refused"),
+			expected: false,
+		},
+		{
+			name:     "empty error message",
+			err:      errors.New(""),
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isDuplicateKeyError(tt.err)
+			if result != tt.expected {
+				t.Errorf("isDuplicateKeyError(%v) = %v, expected %v", tt.err, result, tt.expected)
+			}
+		})
+	}
+}
+
+// ============================================================================
+// Additional Error Path Tests
+// ============================================================================
+
+func TestMySQLStore_GetSteps_QueryError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT .+ FROM rte_steps WHERE tx_id = \\? ORDER BY step_index ASC").
+		WithArgs("tx-123").
+		WillReturnError(errors.New("database connection error"))
+
+	_, err := s.GetSteps(context.Background(), "tx-123")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_GetSteps_ScanError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Return rows with wrong number of columns to trigger scan error
+	rows := sqlmock.NewRows([]string{"id", "tx_id"}).
+		AddRow(1, "tx-123")
+
+	mock.ExpectQuery("SELECT .+ FROM rte_steps WHERE tx_id = \\? ORDER BY step_index ASC").
+		WithArgs("tx-123").
+		WillReturnRows(rows)
+
+	_, err := s.GetSteps(context.Background(), "tx-123")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestMySQLStore_UpdateStep_ExecError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	step := createTestStep("tx-123", 0, "step1")
+
+	mock.ExpectExec("UPDATE rte_steps SET").
+		WillReturnError(errors.New("database connection error"))
+
+	err := s.UpdateStep(context.Background(), step)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_UpdateStep_RowsAffectedError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	step := createTestStep("tx-123", 0, "step1")
+
+	mock.ExpectExec("UPDATE rte_steps SET").
+		WillReturnResult(sqlmock.NewErrorResult(errors.New("rows affected error")))
+
+	err := s.UpdateStep(context.Background(), step)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestMySQLStore_GetStep_QueryError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT .+ FROM rte_steps WHERE tx_id = \\? AND step_index = \\?").
+		WithArgs("tx-123", 0).
+		WillReturnError(errors.New("database connection error"))
+
+	_, err := s.GetStep(context.Background(), "tx-123", 0)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_CheckIdempotency_QueryError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT result FROM rte_idempotency").
+		WithArgs("key-123", sqlmock.AnyArg()).
+		WillReturnError(errors.New("database connection error"))
+
+	_, _, err := s.CheckIdempotency(context.Background(), "key-123")
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrIdempotencyCheckFailed) {
+		t.Errorf("expected ErrIdempotencyCheckFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_MarkIdempotency_ExecError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectExec("INSERT INTO rte_idempotency").
+		WillReturnError(errors.New("database connection error"))
+
+	err := s.MarkIdempotency(context.Background(), "key-123", []byte(`{}`), time.Hour)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_DeleteExpiredIdempotency_ExecError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectExec("DELETE FROM rte_idempotency WHERE expires_at < ?").
+		WillReturnError(errors.New("database connection error"))
+
+	_, err := s.DeleteExpiredIdempotency(context.Background())
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_DeleteExpiredIdempotency_RowsAffectedError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectExec("DELETE FROM rte_idempotency WHERE expires_at < ?").
+		WillReturnResult(sqlmock.NewErrorResult(errors.New("rows affected error")))
+
+	_, err := s.DeleteExpiredIdempotency(context.Background())
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+}
+
+func TestMySQLStore_ListTransactions_CountError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	filter := store.NewTxFilter().WithPagination(10, 0)
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM rte_transactions").
+		WillReturnError(errors.New("database connection error"))
+
+	_, _, err := s.ListTransactions(context.Background(), filter)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_GetStuckTransactions_QueryError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE status IN").
+		WithArgs(rte.TxStatusLocked, rte.TxStatusExecuting, sqlmock.AnyArg()).
+		WillReturnError(errors.New("database connection error"))
+
+	_, err := s.GetStuckTransactions(context.Background(), 5*time.Minute)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+func TestMySQLStore_GetRetryableTransactions_QueryError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions WHERE status = \\? AND retry_count < \\?").
+		WithArgs(rte.TxStatusFailed, 3).
+		WillReturnError(errors.New("database connection error"))
+
+	_, err := s.GetRetryableTransactions(context.Background(), 3)
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}

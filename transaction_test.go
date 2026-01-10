@@ -420,3 +420,21 @@ func (s *mockStep) Compensate(ctx context.Context, txCtx *TxContext) error {
 	}
 	return ErrCompensationNotSupported
 }
+
+// TestTransaction_Validate_EmptyTxID tests validation with empty transaction ID
+func TestTransaction_Validate_EmptyTxID(t *testing.T) {
+	// Create a transaction and manually set empty txID
+	builder := NewTransaction("test_type")
+	builder.tx.txID = "" // Force empty txID
+	builder.tx.stepNames = []string{"step1"}
+
+	err := builder.tx.Validate(nil)
+	if err == nil {
+		t.Error("expected validation error for empty txID")
+	}
+
+	expectedMsg := "transaction ID cannot be empty"
+	if err.Error() != expectedMsg {
+		t.Errorf("expected error '%s', got '%s'", expectedMsg, err.Error())
+	}
+}

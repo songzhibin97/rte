@@ -265,3 +265,104 @@ func TestNoopTracer(t *testing.T) {
 
 	// NoopTracer should not panic and should work without errors
 }
+
+func TestDefaultConfig(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.ServiceName != "rte" {
+		t.Errorf("expected ServiceName 'rte', got '%s'", cfg.ServiceName)
+	}
+	if cfg.TracerProvider != nil {
+		t.Error("expected TracerProvider to be nil")
+	}
+}
+
+func TestOTelTracer_SpanSetStatus(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exporter),
+	)
+	defer tp.Shutdown(context.Background())
+
+	tracer := NewOTelTracer(Config{
+		ServiceName:    "test-rte",
+		TracerProvider: tp,
+	})
+
+	// Test with Error status (which preserves description)
+	ctx := context.Background()
+	_, span := tracer.StartTransaction(ctx, "tx-123", "transfer")
+	span.SetStatus(codes.Error, "operation failed")
+	span.End()
+
+	tp.ForceFlush(context.Background())
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+
+	s := spans[0]
+	if s.Status.Code != codes.Error {
+		t.Errorf("expected Error status, got %v", s.Status.Code)
+	}
+	if s.Status.Description != "operation failed" {
+		t.Errorf("expected description 'operation failed', got '%s'", s.Status.Description)
+	}
+}
+
+func TestOTelTracer_SpanSetStatusOk(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSyncer(exporter),
+	)
+	defer tp.Shutdown(context.Background())
+
+	tracer := NewOTelTracer(Config{
+		ServiceName:    "test-rte",
+		TracerProvider: tp,
+	})
+
+	ctx := context.Background()
+	_, span := tracer.StartTransaction(ctx, "tx-123", "transfer")
+	span.SetStatus(codes.Ok, "")
+	span.End()
+
+	tp.ForceFlush(context.Background())
+
+	spans := exporter.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("expected 1 span, got %d", len(spans))
+	}
+
+	s := spans[0]
+	if s.Status.Code != codes.Ok {
+		t.Errorf("expected Ok status, got %v", s.Status.Code)
+	}
+}
+
+func TestNoopSpan_AllMethods(t *testing.T) {
+	// Test noopSpan directly to ensure coverage
+	span := &noopSpan{}
+
+	// Test End - should not panic
+	span.End()
+
+	// Test SetError with nil - should not panic
+	span.SetError(nil)
+
+	// Test SetError with error - should not panic
+	span.SetError(errors.New("test error"))
+
+	// Test SetStatus - should not panic
+	span.SetStatus(codes.Ok, "ok")
+	span.SetStatus(codes.Error, "error")
+
+	// Test SetAttributes - should not panic
+	span.SetAttributes(attribute.String("key", "value"))
+	span.SetAttributes(attribute.Int("count", 1), attribute.Bool("flag", true))
+
+	// Test AddEvent - should not panic
+	span.AddEvent("event1")
+	span.AddEvent("event2", attribute.String("attr", "value"))
+}
