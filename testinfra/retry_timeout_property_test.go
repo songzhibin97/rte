@@ -19,14 +19,13 @@ import (
 )
 
 // ============================================================================
-// Property 6: Retry Boundedness (重试有界性)
+
 // For any failing step, the number of retry attempts SHALL not exceed the
 // configured maximum retries.
 // ============================================================================
 
 // TestProperty_RetryBoundedness_Integration tests retry boundedness using real MySQL and Redis.
-// Property 6: Retry Boundedness
-// *For any* failing step, the number of retry attempts SHALL not exceed the
+
 // configured maximum retries.
 func TestProperty_RetryBoundedness_Integration(t *testing.T) {
 	ti := NewTestInfrastructure(t)
@@ -86,12 +85,12 @@ func TestProperty_RetryBoundedness_Integration(t *testing.T) {
 		// Execute transaction (should fail after retries)
 		result, _ := coord.Execute(context.Background(), tx)
 
-		// Property: Transaction should be in FAILED status
+		
 		if result.Status != rte.TxStatusFailed {
 			rt.Fatalf("expected FAILED status, got %s", result.Status)
 		}
 
-		// Property: Execution count should be exactly 1 (no retries for step execution in coordinator)
+		
 		// Note: The coordinator doesn't retry step execution - it only retries compensation.
 		// Step execution fails immediately and triggers compensation or failure.
 		// The retry logic in the coordinator is for compensation, not for step execution.
@@ -137,7 +136,7 @@ func (s *alwaysFailingStep) SupportsCompensation() bool {
 var _ rte.Step = (*alwaysFailingStep)(nil)
 
 // ============================================================================
-// Property 6 (Alternative): Compensation Retry Boundedness
+
 // For any failing compensation, the number of retry attempts SHALL not exceed
 // the configured maximum retries.
 // ============================================================================
@@ -211,19 +210,19 @@ func TestProperty_CompensationRetryBoundedness_Integration(t *testing.T) {
 		// Execute transaction (should fail at step 2, then fail compensation)
 		result, _ := coord.Execute(context.Background(), tx)
 
-		// Property: Transaction should be in COMPENSATION_FAILED status
+		
 		if result.Status != rte.TxStatusCompensationFailed {
 			rt.Fatalf("expected COMPENSATION_FAILED status, got %s", result.Status)
 		}
 
-		// Property: Compensation attempts should not exceed maxRetries + 1 (initial + retries)
+		
 		expectedMaxAttempts := int64(maxRetries + 1)
 		if compensationAttempts > expectedMaxAttempts {
 			rt.Fatalf("compensation attempts %d exceeded max %d (maxRetries=%d)",
 				compensationAttempts, expectedMaxAttempts, maxRetries)
 		}
 
-		// Property: Compensation attempts should be exactly maxRetries + 1
+		
 		if compensationAttempts != expectedMaxAttempts {
 			rt.Fatalf("expected exactly %d compensation attempts, got %d",
 				expectedMaxAttempts, compensationAttempts)
@@ -277,14 +276,13 @@ var _ rte.Step = (*successfulStep)(nil)
 var _ rte.Step = (*failingStepWithCompensation)(nil)
 
 // ============================================================================
-// Property 7: Timeout Handling (超时处理)
+
 // For any step that exceeds its timeout, the system SHALL interrupt execution
 // and return a timeout error.
 // ============================================================================
 
 // TestProperty_TimeoutHandling_Integration tests timeout handling using real MySQL and Redis.
-// Property 7: Timeout Handling
-// *For any* step that exceeds its timeout, the system SHALL interrupt execution
+
 // and return a timeout error.
 func TestProperty_TimeoutHandling_Integration(t *testing.T) {
 	ti := NewTestInfrastructure(t)
@@ -348,12 +346,12 @@ func TestProperty_TimeoutHandling_Integration(t *testing.T) {
 		result, _ := coord.Execute(context.Background(), tx)
 		duration := time.Since(startTime)
 
-		// Property: Transaction should be in FAILED status (timeout triggers failure)
+		
 		if result.Status != rte.TxStatusFailed {
 			rt.Fatalf("expected FAILED status, got %s", result.Status)
 		}
 
-		// Property: Error should indicate timeout
+		
 		if result.Error == nil {
 			rt.Fatalf("expected error, got nil")
 		}
@@ -361,12 +359,12 @@ func TestProperty_TimeoutHandling_Integration(t *testing.T) {
 			rt.Logf("error type: %T, error: %v", result.Error, result.Error)
 		}
 
-		// Property: Step should have been interrupted (context cancelled)
+		
 		if atomic.LoadInt64(&wasInterrupted) != 1 {
 			rt.Fatalf("expected step to be interrupted by timeout")
 		}
 
-		// Property: Execution duration should be close to timeout (not full execution time)
+		
 		// Allow some tolerance for scheduling delays
 		maxExpectedDuration := timeout + 500*time.Millisecond
 		if duration > maxExpectedDuration {
@@ -420,7 +418,7 @@ func (s *slowStep) SupportsCompensation() bool {
 var _ rte.Step = (*slowStep)(nil)
 
 // ============================================================================
-// Property 7 (Alternative): Transaction Timeout Handling
+
 // For any transaction that exceeds its total timeout, the system SHALL mark
 // the transaction as TIMEOUT.
 // ============================================================================
@@ -492,14 +490,14 @@ func TestProperty_TransactionTimeoutHandling_Integration(t *testing.T) {
 		// Execute transaction (should timeout)
 		result, _ := coord.Execute(context.Background(), tx)
 
-		// Property: Transaction should be in TIMEOUT or FAILED status
+		
 		// (depending on whether timeout is detected during step execution or between steps)
 		if result.Status != rte.TxStatusTimeout && result.Status != rte.TxStatusFailed {
 			rt.Fatalf("expected TIMEOUT or FAILED status, got %s (txTimeout=%v, numSteps=%d, stepTime=%v)",
 				result.Status, txTimeout, numSteps, stepTime)
 		}
 
-		// Property: Error should be present
+		
 		if result.Error == nil {
 			rt.Fatalf("expected error, got nil")
 		}

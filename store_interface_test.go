@@ -344,8 +344,7 @@ func TestNewStoreStepRecord(t *testing.T) {
 
 // ============================================================================
 // Property Test for StoreTxContext Round-Trip
-// Property 4: StoreTxContext Round-Trip
-// *For any* TxContext with non-nil fields, converting to StoreTxContext and back
+
 // via ToTxContext should preserve all data (TxID, TxType, StepIndex, Input, Output, Metadata).
 // ============================================================================
 
@@ -402,7 +401,7 @@ func TestProperty_StoreTxContextRoundTrip(t *testing.T) {
 		// Convert back to TxContext
 		restored := storeCtx.ToTxContext()
 
-		// Property: Basic fields should be preserved
+		
 		if restored.TxID != original.TxID {
 			rt.Fatalf("TxID not preserved: expected %s, got %s", original.TxID, restored.TxID)
 		}
@@ -413,7 +412,7 @@ func TestProperty_StoreTxContextRoundTrip(t *testing.T) {
 			rt.Fatalf("StepIndex not preserved: expected %d, got %d", original.StepIndex, restored.StepIndex)
 		}
 
-		// Property: Input map should be preserved
+		
 		for k, v := range inputMap {
 			restoredVal, ok := restored.GetInput(k)
 			if !ok {
@@ -424,7 +423,7 @@ func TestProperty_StoreTxContextRoundTrip(t *testing.T) {
 			}
 		}
 
-		// Property: Output map should be preserved
+		
 		for k, v := range outputMap {
 			restoredVal, ok := restored.GetOutput(k)
 			if !ok {
@@ -435,7 +434,7 @@ func TestProperty_StoreTxContextRoundTrip(t *testing.T) {
 			}
 		}
 
-		// Property: Metadata map should be preserved
+		
 		for k, v := range metaMap {
 			restoredVal, ok := restored.GetMetadata(k)
 			if !ok {

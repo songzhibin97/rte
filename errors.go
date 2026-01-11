@@ -18,6 +18,9 @@ var (
 
 	// ErrTransactionCancelled indicates the transaction was cancelled
 	ErrTransactionCancelled = errors.New("transaction cancelled")
+
+	// ErrMaxRetriesExceeded indicates the maximum retry count has been exceeded
+	ErrMaxRetriesExceeded = errors.New("max retries exceeded")
 )
 
 // Step errors

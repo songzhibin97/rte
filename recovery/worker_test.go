@@ -1423,7 +1423,7 @@ func TestWorker_SkipsAlreadyRecoveredTransaction(t *testing.T) {
 // Property-Based Tests
 // ============================================================================
 
-// Property 7: Recovery Worker Coordination
+
 // For any stuck transaction, only one recovery worker instance SHALL process it at a time.
 func TestProperty_RecoveryWorkerCoordination(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
@@ -1491,7 +1491,7 @@ func TestProperty_RecoveryWorkerCoordination(t *testing.T) {
 		}
 		wg.Wait()
 
-		// Property: Each transaction should be processed by exactly one worker
+		
 		processedMu.Lock()
 		defer processedMu.Unlock()
 
@@ -1502,7 +1502,7 @@ func TestProperty_RecoveryWorkerCoordination(t *testing.T) {
 			}
 		}
 
-		// Property: All stuck transactions should be processed
+		
 		if len(processedBy) != numTx {
 			t.Fatalf("expected %d transactions to be processed, got %d", numTx, len(processedBy))
 		}
@@ -1595,7 +1595,7 @@ func TestProperty_RecoveryWorkerCoordination_WithContention(t *testing.T) {
 		}
 		wg.Wait()
 
-		// Property: Transaction should be processed exactly once
+		
 		finalCount := atomic.LoadInt32(&processCount)
 		if finalCount != 1 {
 			t.Fatalf("expected transaction to be processed exactly once, got %d times", finalCount)
@@ -1615,6 +1615,552 @@ func (c *countingCoordinator) Resume(ctx context.Context, txID string) error {
 	atomic.AddInt32(c.processCount, 1)
 
 	// Update transaction status to COMPLETED so other workers won't process it
+	if c.store != nil {
+		c.store.mu.Lock()
+		if tx, exists := c.store.transactions[txID]; exists {
+			tx.Status = "COMPLETED"
+		}
+		c.store.mu.Unlock()
+	}
+
+	return nil
+}
+
+// ============================================================================
+
+// ============================================================================
+
+// TestProperty_RecoveryRetryLimit tests that the recovery worker respects max retry limits.
+func TestProperty_RecoveryRetryLimit(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		store := newMockStore()
+		locker := newMockLocker()
+		eventBus := event.NewMemoryEventBus()
+
+		// Generate random max retries (1-10)
+		maxRetries := rapid.IntRange(1, 10).Draw(t, "maxRetries")
+
+		// Generate random retry count that is at or above max retries
+		// This tests the boundary condition where retries should NOT happen
+		retryCount := rapid.IntRange(maxRetries, maxRetries+5).Draw(t, "retryCount")
+
+		// Track coordinator resume calls
+		var resumeCallCount int32
+		coordinator := &atomicCountingCoordinator{
+			callCount: &resumeCallCount,
+		}
+
+		// Track critical alerts
+		var criticalAlerts []event.Event
+		var alertMu sync.Mutex
+		eventBus.Subscribe(event.EventAlertCritical, func(ctx context.Context, e event.Event) error {
+			alertMu.Lock()
+			criticalAlerts = append(criticalAlerts, e)
+			alertMu.Unlock()
+			return nil
+		})
+
+		// Add a failed transaction that has reached or exceeded max retries
+		txID := fmt.Sprintf("tx-retry-limit-%d-%d", maxRetries, retryCount)
+		store.AddTransaction(&StoreTx{
+			TxID:       txID,
+			TxType:     "test",
+			Status:     "FAILED",
+			RetryCount: retryCount,
+			MaxRetries: maxRetries,
+			UpdatedAt:  time.Now(),
+		})
+
+		// Use a custom store that returns the transaction even though it's at max retries
+		customStore := &maxRetriesPropertyTestStore{
+			mockStore: store,
+		}
+
+		worker := NewWorker(
+			WithStore(customStore),
+			WithLocker(locker),
+			WithCoordinator(coordinator),
+			WithEventBus(eventBus),
+			WithConfig(Config{
+				RecoveryInterval: 100 * time.Millisecond,
+				StuckThreshold:   5 * time.Minute,
+				MaxRetries:       maxRetries,
+				LockTTL:          30 * time.Second,
+			}),
+			WithLogger(&silentLogger{}),
+		)
+
+		// Run a single scan
+		worker.ScanOnce(context.Background())
+
+		
+		finalCallCount := atomic.LoadInt32(&resumeCallCount)
+		if finalCallCount != 0 {
+			t.Fatalf("expected 0 resume calls when retryCount(%d) >= maxRetries(%d), got %d",
+				retryCount, maxRetries, finalCallCount)
+		}
+
+		
+		alertMu.Lock()
+		alertCount := len(criticalAlerts)
+		alertMu.Unlock()
+
+		if alertCount != 1 {
+			t.Fatalf("expected 1 critical alert when max retries exceeded, got %d", alertCount)
+		}
+
+		// Verify alert contains correct transaction ID
+		alertMu.Lock()
+		if criticalAlerts[0].TxID != txID {
+			t.Fatalf("expected alert for %s, got %s", txID, criticalAlerts[0].TxID)
+		}
+		alertMu.Unlock()
+	})
+}
+
+// TestProperty_RecoveryRetryLimit_BelowMax tests that retries ARE allowed when below max
+func TestProperty_RecoveryRetryLimit_BelowMax(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		store := newMockStore()
+		locker := newMockLocker()
+		eventBus := event.NewMemoryEventBus()
+
+		// Generate random max retries (2-10)
+		maxRetries := rapid.IntRange(2, 10).Draw(t, "maxRetries")
+
+		// Generate random retry count that is below max retries
+		retryCount := rapid.IntRange(0, maxRetries-1).Draw(t, "retryCount")
+
+		// Track coordinator resume calls
+		var resumeCallCount int32
+		coordinator := &atomicCountingCoordinator{
+			callCount: &resumeCallCount,
+			store:     store,
+		}
+
+		// Track critical alerts (should be none)
+		var criticalAlerts []event.Event
+		var alertMu sync.Mutex
+		eventBus.Subscribe(event.EventAlertCritical, func(ctx context.Context, e event.Event) error {
+			alertMu.Lock()
+			criticalAlerts = append(criticalAlerts, e)
+			alertMu.Unlock()
+			return nil
+		})
+
+		// Add a failed transaction that can still be retried
+		txID := fmt.Sprintf("tx-retry-allowed-%d-%d", maxRetries, retryCount)
+		store.AddTransaction(&StoreTx{
+			TxID:       txID,
+			TxType:     "test",
+			Status:     "FAILED",
+			RetryCount: retryCount,
+			MaxRetries: maxRetries,
+			UpdatedAt:  time.Now(),
+		})
+
+		worker := NewWorker(
+			WithStore(store),
+			WithLocker(locker),
+			WithCoordinator(coordinator),
+			WithEventBus(eventBus),
+			WithConfig(Config{
+				RecoveryInterval: 100 * time.Millisecond,
+				StuckThreshold:   5 * time.Minute,
+				MaxRetries:       maxRetries,
+				LockTTL:          30 * time.Second,
+			}),
+			WithLogger(&silentLogger{}),
+		)
+
+		// Run a single scan
+		worker.ScanOnce(context.Background())
+
+		
+		finalCallCount := atomic.LoadInt32(&resumeCallCount)
+		if finalCallCount != 1 {
+			t.Fatalf("expected 1 resume call when retryCount(%d) < maxRetries(%d), got %d",
+				retryCount, maxRetries, finalCallCount)
+		}
+
+		
+		alertMu.Lock()
+		alertCount := len(criticalAlerts)
+		alertMu.Unlock()
+
+		if alertCount != 0 {
+			t.Fatalf("expected 0 critical alerts when retries allowed, got %d", alertCount)
+		}
+	})
+}
+
+// atomicCountingCoordinator counts Resume calls atomically
+type atomicCountingCoordinator struct {
+	callCount *int32
+	store     *mockStore
+}
+
+func (c *atomicCountingCoordinator) Resume(ctx context.Context, txID string) error {
+	atomic.AddInt32(c.callCount, 1)
+
+	// Update transaction status to COMPLETED so it won't be processed again
+	if c.store != nil {
+		c.store.mu.Lock()
+		if tx, exists := c.store.transactions[txID]; exists {
+			tx.Status = "COMPLETED"
+		}
+		c.store.mu.Unlock()
+	}
+
+	return nil
+}
+
+// maxRetriesPropertyTestStore wraps mockStore to return all FAILED transactions
+type maxRetriesPropertyTestStore struct {
+	*mockStore
+}
+
+func (s *maxRetriesPropertyTestStore) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*StoreTx, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var result []*StoreTx
+	for _, tx := range s.transactions {
+		// Return all FAILED transactions regardless of retry count
+		// This simulates the scenario where we need to check and potentially alert
+		if tx.Status == "FAILED" {
+			txCopy := *tx
+			result = append(result, &txCopy)
+		}
+	}
+	return result, nil
+}
+
+// ============================================================================
+
+// distributed lock before processing to prevent concurrent recovery.
+// ============================================================================
+
+// TestProperty_RecoveryLockAcquisition tests that the recovery worker acquires locks before processing.
+func TestProperty_RecoveryLockAcquisition(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		store := newMockStore()
+		eventBus := event.NewMemoryEventBus()
+
+		// Generate random number of stuck transactions
+		numTx := rapid.IntRange(1, 5).Draw(t, "numTx")
+
+		// Track lock acquisitions
+		var lockAcquisitions []string
+		var lockMu sync.Mutex
+
+		// Create a tracking locker that records all lock acquisitions
+		locker := &trackingLocker{
+			locks:            make(map[string]bool),
+			lockAcquisitions: &lockAcquisitions,
+			mu:               &lockMu,
+		}
+
+		// Track coordinator resume calls with their lock state
+		var resumeCalls []resumeCallRecord
+		var resumeMu sync.Mutex
+
+		coordinator := &lockVerifyingCoordinator{
+			locker:      locker,
+			resumeCalls: &resumeCalls,
+			mu:          &resumeMu,
+			store:       store,
+		}
+
+		// Add stuck transactions
+		stuckTime := time.Now().Add(-10 * time.Minute)
+		txIDs := make([]string, numTx)
+		for i := 0; i < numTx; i++ {
+			txID := fmt.Sprintf("tx-lock-test-%d", i)
+			txIDs[i] = txID
+			store.AddTransaction(&StoreTx{
+				TxID:       txID,
+				TxType:     "test",
+				Status:     "EXECUTING",
+				RetryCount: 0,
+				MaxRetries: 3,
+				UpdatedAt:  stuckTime,
+			})
+		}
+
+		worker := NewWorker(
+			WithStore(store),
+			WithLocker(locker),
+			WithCoordinator(coordinator),
+			WithEventBus(eventBus),
+			WithConfig(Config{
+				RecoveryInterval: 100 * time.Millisecond,
+				StuckThreshold:   5 * time.Minute,
+				MaxRetries:       3,
+				LockTTL:          30 * time.Second,
+			}),
+			WithLogger(&silentLogger{}),
+		)
+
+		// Run a single scan
+		worker.ScanOnce(context.Background())
+
+		
+		resumeMu.Lock()
+		defer resumeMu.Unlock()
+
+		for _, call := range resumeCalls {
+			if !call.lockHeld {
+				t.Fatalf("transaction %s was processed without holding lock", call.txID)
+			}
+		}
+
+		
+		lockMu.Lock()
+		defer lockMu.Unlock()
+
+		// Verify that lock was acquired for each transaction that was processed
+		for _, call := range resumeCalls {
+			expectedLockKey := fmt.Sprintf("recovery:%s", call.txID)
+			found := false
+			for _, lockKey := range lockAcquisitions {
+				if lockKey == expectedLockKey {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("expected lock acquisition for %s, but none found", expectedLockKey)
+			}
+		}
+	})
+}
+
+// TestProperty_RecoveryLockAcquisition_FailedTransactions tests lock acquisition for failed transaction retries.
+func TestProperty_RecoveryLockAcquisition_FailedTransactions(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		store := newMockStore()
+		eventBus := event.NewMemoryEventBus()
+
+		// Generate random number of failed transactions
+		numTx := rapid.IntRange(1, 5).Draw(t, "numTx")
+
+		// Track lock acquisitions
+		var lockAcquisitions []string
+		var lockMu sync.Mutex
+
+		// Create a tracking locker
+		locker := &trackingLocker{
+			locks:            make(map[string]bool),
+			lockAcquisitions: &lockAcquisitions,
+			mu:               &lockMu,
+		}
+
+		// Track coordinator resume calls with their lock state
+		var resumeCalls []resumeCallRecord
+		var resumeMu sync.Mutex
+
+		coordinator := &lockVerifyingCoordinator{
+			locker:      locker,
+			resumeCalls: &resumeCalls,
+			mu:          &resumeMu,
+			store:       store,
+		}
+
+		// Add failed transactions that can be retried
+		txIDs := make([]string, numTx)
+		for i := 0; i < numTx; i++ {
+			txID := fmt.Sprintf("tx-failed-lock-test-%d", i)
+			txIDs[i] = txID
+			store.AddTransaction(&StoreTx{
+				TxID:       txID,
+				TxType:     "test",
+				Status:     "FAILED",
+				RetryCount: 0, // Can be retried
+				MaxRetries: 3,
+				UpdatedAt:  time.Now(),
+			})
+		}
+
+		worker := NewWorker(
+			WithStore(store),
+			WithLocker(locker),
+			WithCoordinator(coordinator),
+			WithEventBus(eventBus),
+			WithConfig(Config{
+				RecoveryInterval: 100 * time.Millisecond,
+				StuckThreshold:   5 * time.Minute,
+				MaxRetries:       3,
+				LockTTL:          30 * time.Second,
+			}),
+			WithLogger(&silentLogger{}),
+		)
+
+		// Run a single scan
+		worker.ScanOnce(context.Background())
+
+		
+		resumeMu.Lock()
+		defer resumeMu.Unlock()
+
+		for _, call := range resumeCalls {
+			if !call.lockHeld {
+				t.Fatalf("failed transaction %s was retried without holding lock", call.txID)
+			}
+		}
+	})
+}
+
+// TestProperty_RecoveryLockAcquisition_PreventsConcurrentProcessing tests that locks prevent concurrent processing.
+func TestProperty_RecoveryLockAcquisition_PreventsConcurrentProcessing(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		store := newMockStore()
+		eventBus := event.NewMemoryEventBus()
+
+		// Single transaction with multiple workers competing
+		stuckTime := time.Now().Add(-10 * time.Minute)
+		txID := "tx-concurrent-lock-test"
+		store.AddTransaction(&StoreTx{
+			TxID:       txID,
+			TxType:     "test",
+			Status:     "EXECUTING",
+			RetryCount: 0,
+			MaxRetries: 3,
+			UpdatedAt:  stuckTime,
+		})
+
+		// Shared locker that enforces mutual exclusion
+		locker := newMockLocker()
+
+		// Track how many times Resume was called
+		var resumeCount int32
+
+		// Generate random number of concurrent workers
+		numWorkers := rapid.IntRange(2, 8).Draw(t, "numWorkers")
+
+		// Create workers
+		workers := make([]*Worker, numWorkers)
+		for i := 0; i < numWorkers; i++ {
+			coordinator := &atomicCountingCoordinator{
+				callCount: &resumeCount,
+				store:     store,
+			}
+
+			workers[i] = NewWorker(
+				WithStore(store),
+				WithLocker(locker),
+				WithCoordinator(coordinator),
+				WithEventBus(eventBus),
+				WithConfig(Config{
+					RecoveryInterval: 100 * time.Millisecond,
+					StuckThreshold:   5 * time.Minute,
+					MaxRetries:       3,
+					LockTTL:          30 * time.Second,
+				}),
+				WithLogger(&silentLogger{}),
+			)
+		}
+
+		// Run all workers concurrently
+		var wg sync.WaitGroup
+		for _, w := range workers {
+			wg.Add(1)
+			go func(worker *Worker) {
+				defer wg.Done()
+				worker.ScanOnce(context.Background())
+			}(w)
+		}
+		wg.Wait()
+
+		
+		finalCount := atomic.LoadInt32(&resumeCount)
+		if finalCount != 1 {
+			t.Fatalf("expected transaction to be processed exactly once due to locking, got %d times", finalCount)
+		}
+	})
+}
+
+// resumeCallRecord records a Resume call with lock state
+type resumeCallRecord struct {
+	txID     string
+	lockHeld bool
+}
+
+// trackingLocker tracks all lock acquisitions
+type trackingLocker struct {
+	locks            map[string]bool
+	lockAcquisitions *[]string
+	mu               *sync.Mutex
+}
+
+func (l *trackingLocker) Acquire(ctx context.Context, keys []string, ttl time.Duration) (lock.LockHandle, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Check all keys first
+	for _, key := range keys {
+		if l.locks[key] {
+			return nil, errors.New("lock already held")
+		}
+	}
+
+	// Acquire all keys atomically
+	for _, key := range keys {
+		l.locks[key] = true
+		*l.lockAcquisitions = append(*l.lockAcquisitions, key)
+	}
+
+	return &trackingLockHandle{locker: l, keys: keys}, nil
+}
+
+func (l *trackingLocker) IsLocked(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.locks[key]
+}
+
+type trackingLockHandle struct {
+	locker *trackingLocker
+	keys   []string
+}
+
+func (h *trackingLockHandle) Extend(ctx context.Context, ttl time.Duration) error {
+	return nil
+}
+
+func (h *trackingLockHandle) Release(ctx context.Context) error {
+	h.locker.mu.Lock()
+	defer h.locker.mu.Unlock()
+	for _, key := range h.keys {
+		delete(h.locker.locks, key)
+	}
+	return nil
+}
+
+func (h *trackingLockHandle) Keys() []string {
+	return h.keys
+}
+
+// lockVerifyingCoordinator verifies that lock is held when Resume is called
+type lockVerifyingCoordinator struct {
+	locker      *trackingLocker
+	resumeCalls *[]resumeCallRecord
+	mu          *sync.Mutex
+	store       *mockStore
+}
+
+func (c *lockVerifyingCoordinator) Resume(ctx context.Context, txID string) error {
+	// Check if lock is held for this transaction
+	lockKey := fmt.Sprintf("recovery:%s", txID)
+	lockHeld := c.locker.IsLocked(lockKey)
+
+	c.mu.Lock()
+	*c.resumeCalls = append(*c.resumeCalls, resumeCallRecord{
+		txID:     txID,
+		lockHeld: lockHeld,
+	})
+	c.mu.Unlock()
+
+	// Update transaction status to COMPLETED
 	if c.store != nil {
 		c.store.mu.Lock()
 		if tx, exists := c.store.transactions[txID]; exists {

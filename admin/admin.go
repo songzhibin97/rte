@@ -426,6 +426,11 @@ func (a *AdminImpl) RetryTransaction(ctx context.Context, txID string) error {
 		return fmt.Errorf("%w: can only retry failed transactions, current status: %s", rte.ErrInvalidTransactionState, tx.Status)
 	}
 
+	// Check if max retries exceeded (Requirement 10.5)
+	if tx.RetryCount >= tx.MaxRetries {
+		return fmt.Errorf("%w: max retries exceeded (current: %d, max: %d)", rte.ErrMaxRetriesExceeded, tx.RetryCount, tx.MaxRetries)
+	}
+
 	// Increment retry count
 	tx.RetryCount++
 	tx.ErrorMsg = ""

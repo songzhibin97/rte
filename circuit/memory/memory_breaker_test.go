@@ -241,7 +241,7 @@ func TestMemoryBreaker_Reset(t *testing.T) {
 // Property-Based Tests
 // ============================================================================
 
-// Property 6: Circuit Breaker State Transitions
+
 // For any circuit breaker, state transitions SHALL follow:
 // - CLOSED → OPEN (on threshold failures)
 // - OPEN → HALF_OPEN (on timeout)
@@ -262,12 +262,12 @@ func TestProperty_CircuitBreakerStateTransitions(t *testing.T) {
 		breaker := NewMemoryBreakerWithConfig(config)
 		cb := breaker.Get("test-service")
 
-		// Property 1: Initial state is CLOSED
+		
 		if cb.State() != circuit.StateClosed {
 			t.Fatalf("initial state should be CLOSED, got %s", cb.State())
 		}
 
-		// Property 2: CLOSED → OPEN after threshold consecutive failures (Req 7.2)
+		
 		for i := 0; i < threshold; i++ {
 			cb.Execute(context.Background(), func() error {
 				return errSimulatedFailure
@@ -278,7 +278,7 @@ func TestProperty_CircuitBreakerStateTransitions(t *testing.T) {
 			t.Fatalf("state should be OPEN after %d consecutive failures, got %s", threshold, cb.State())
 		}
 
-		// Property 3: OPEN state rejects requests (Req 7.3)
+		
 		err := cb.Execute(context.Background(), func() error {
 			return nil
 		})
@@ -286,7 +286,7 @@ func TestProperty_CircuitBreakerStateTransitions(t *testing.T) {
 			t.Fatalf("OPEN state should reject requests with ErrCircuitOpen, got %v", err)
 		}
 
-		// Property 4: OPEN → HALF_OPEN after timeout (Req 7.4)
+		
 		time.Sleep(15 * time.Millisecond)
 		if cb.State() != circuit.StateHalfOpen {
 			t.Fatalf("state should be HALF_OPEN after timeout, got %s", cb.State())
@@ -393,7 +393,162 @@ func TestProperty_ConsecutiveFailuresResetOnSuccess(t *testing.T) {
 	})
 }
 
-// Property: Request counts are always non-negative and consistent
+
+// For any circuit breaker, the state transitions SHALL follow:
+// CLOSED → OPEN (after threshold failures) → HALF_OPEN (after timeout) → CLOSED (after success) or OPEN (after failure)
+func TestProperty_CircuitBreakerStateMachine(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate random configuration within reasonable bounds
+		threshold := rapid.IntRange(1, 10).Draw(t, "threshold")
+		halfOpenMaxReqs := rapid.IntRange(1, 5).Draw(t, "halfOpenMaxReqs")
+
+		config := circuit.BreakerConfig{
+			Threshold:       threshold,
+			Timeout:         10 * time.Millisecond, // Short timeout for testing
+			HalfOpenMaxReqs: halfOpenMaxReqs,
+		}
+
+		breaker := NewMemoryBreakerWithConfig(config)
+		cb := breaker.Get("test-service")
+
+		// ========================================================================
+		
+		// THE Circuit_Breaker SHALL open and reject subsequent requests
+		// ========================================================================
+
+		// Verify initial state is CLOSED
+		if cb.State() != circuit.StateClosed {
+			t.Fatalf("initial state should be CLOSED, got %s", cb.State())
+		}
+
+		// Cause exactly threshold consecutive failures
+		for i := 0; i < threshold; i++ {
+			cb.Execute(context.Background(), func() error {
+				return errSimulatedFailure
+			})
+		}
+
+		// Verify circuit is now OPEN
+		if cb.State() != circuit.StateOpen {
+			t.Fatalf("Req 5.1: state should be OPEN after %d consecutive failures, got %s", threshold, cb.State())
+		}
+
+		// ========================================================================
+		
+		// SHALL reject requests immediately without calling the downstream service
+		// ========================================================================
+
+		// Verify OPEN state rejects requests
+		executed := false
+		err := cb.Execute(context.Background(), func() error {
+			executed = true
+			return nil
+		})
+
+		if !errors.Is(err, rte.ErrCircuitOpen) {
+			t.Fatalf("Req 5.2: OPEN state should reject with ErrCircuitOpen, got %v", err)
+		}
+		if executed {
+			t.Fatalf("Req 5.2: OPEN state should NOT execute the function")
+		}
+
+		// ========================================================================
+		
+		// THE Circuit_Breaker SHALL transition to half-open state
+		// ========================================================================
+
+		// Wait for timeout to expire
+		time.Sleep(15 * time.Millisecond)
+
+		// Verify state is now HALF_OPEN
+		if cb.State() != circuit.StateHalfOpen {
+			t.Fatalf("Req 5.3: state should be HALF_OPEN after timeout, got %s", cb.State())
+		}
+
+		// ========================================================================
+		
+		// allow limited requests to test service recovery
+		// ========================================================================
+
+		// Reset and get back to HALF_OPEN state for testing limited requests
+		cb.Reset()
+		for i := 0; i < threshold; i++ {
+			cb.Execute(context.Background(), func() error {
+				return errSimulatedFailure
+			})
+		}
+		time.Sleep(15 * time.Millisecond)
+
+		// Verify HALF_OPEN allows limited requests
+		allowedRequests := 0
+		for i := 0; i < halfOpenMaxReqs+2; i++ {
+			err := cb.Execute(context.Background(), func() error {
+				return nil
+			})
+			if err == nil {
+				allowedRequests++
+			}
+		}
+
+		// Should have allowed at least halfOpenMaxReqs requests
+		// (may close after success, allowing more)
+		if allowedRequests < halfOpenMaxReqs {
+			t.Fatalf("Req 5.4: HALF_OPEN should allow at least %d requests, allowed %d",
+				halfOpenMaxReqs, allowedRequests)
+		}
+
+		// ========================================================================
+		// Test HALF_OPEN → CLOSED transition 
+		// ========================================================================
+
+		cb.Reset()
+		// Get to HALF_OPEN state
+		for i := 0; i < threshold; i++ {
+			cb.Execute(context.Background(), func() error {
+				return errSimulatedFailure
+			})
+		}
+		time.Sleep(15 * time.Millisecond)
+
+		// Execute successful requests in HALF_OPEN
+		for i := 0; i < halfOpenMaxReqs; i++ {
+			cb.Execute(context.Background(), func() error {
+				return nil
+			})
+		}
+
+		// Verify circuit is now CLOSED
+		if cb.State() != circuit.StateClosed {
+			t.Fatalf("Req 5.5: state should be CLOSED after %d successful requests in HALF_OPEN, got %s",
+				halfOpenMaxReqs, cb.State())
+		}
+
+		// ========================================================================
+		// Test HALF_OPEN → OPEN transition on failure 
+		// ========================================================================
+
+		cb.Reset()
+		// Get to HALF_OPEN state
+		for i := 0; i < threshold; i++ {
+			cb.Execute(context.Background(), func() error {
+				return errSimulatedFailure
+			})
+		}
+		time.Sleep(15 * time.Millisecond)
+
+		// Execute failed request in HALF_OPEN
+		cb.Execute(context.Background(), func() error {
+			return errSimulatedFailure
+		})
+
+		// Verify circuit is now OPEN again
+		if cb.State() != circuit.StateOpen {
+			t.Fatalf("Req 5.6: state should be OPEN after failure in HALF_OPEN, got %s", cb.State())
+		}
+	})
+}
+
+
 func TestProperty_CountsConsistency(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		numOperations := rapid.IntRange(1, 50).Draw(t, "numOperations")
@@ -433,18 +588,18 @@ func TestProperty_CountsConsistency(t *testing.T) {
 
 		counts := cb.Counts()
 
-		// Property: Total successes + failures should equal requests
+		
 		if counts.TotalSuccesses+counts.TotalFailures != counts.Requests {
 			t.Fatalf("successes(%d) + failures(%d) should equal requests(%d)",
 				counts.TotalSuccesses, counts.TotalFailures, counts.Requests)
 		}
 
-		// Property: Counts should be non-negative
+		
 		if counts.Requests < 0 || counts.TotalSuccesses < 0 || counts.TotalFailures < 0 {
 			t.Fatalf("counts should be non-negative: %+v", counts)
 		}
 
-		// Property: Consecutive counts should not exceed totals
+		
 		if counts.ConsecutiveSuccesses > counts.TotalSuccesses {
 			t.Fatalf("consecutive successes(%d) should not exceed total successes(%d)",
 				counts.ConsecutiveSuccesses, counts.TotalSuccesses)

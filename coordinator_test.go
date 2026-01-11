@@ -530,7 +530,7 @@ func TestCoordinator_ExecuteWithCompensation(t *testing.T) {
 // Property-Based Tests
 // ============================================================================
 
-// Property 1: Transaction State Consistency
+
 // For any transaction, the state transitions SHALL only follow the defined state machine paths.
 func TestProperty_TransactionStateConsistency(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
@@ -604,31 +604,31 @@ func TestProperty_TransactionStateConsistency(t *testing.T) {
 			t.Fatalf("failed to get stored transaction: %v", err)
 		}
 
-		// Property: Final state must be terminal or FAILED (FAILED can still be retried/compensated later)
+		
 		// FAILED is a valid end state for Execute() but not terminal in state machine sense
 		isValidFinalState := IsTxTerminal(storedTx.Status) || storedTx.Status == TxStatusFailed
 		if !isValidFinalState {
 			t.Fatalf("final state %s is not a valid final state", storedTx.Status)
 		}
 
-		// Property: Result status must match stored status
+		
 		if result.Status != storedTx.Status {
 			t.Fatalf("result status %s does not match stored status %s", result.Status, storedTx.Status)
 		}
 
-		// Property: If no failure, status should be COMPLETED
+		
 		if failAtStep == -1 && storedTx.Status != TxStatusCompleted {
 			t.Fatalf("expected COMPLETED for successful transaction, got %s", storedTx.Status)
 		}
 
-		// Property: If failure with compensation support and at least one step completed, status should be COMPENSATED
+		
 		if failAtStep > 0 && supportsCompensation {
 			if storedTx.Status != TxStatusCompensated {
 				t.Fatalf("expected COMPENSATED for failed transaction with compensation, got %s", storedTx.Status)
 			}
 		}
 
-		// Property: If failure at first step or without compensation support, status should be FAILED
+		
 		if failAtStep == 0 || (failAtStep >= 0 && !supportsCompensation) {
 			if storedTx.Status != TxStatusFailed {
 				t.Fatalf("expected FAILED for failed transaction at first step or without compensation, got %s", storedTx.Status)
@@ -637,7 +637,7 @@ func TestProperty_TransactionStateConsistency(t *testing.T) {
 	})
 }
 
-// Property 5: Compensation Completeness
+
 // For any failed transaction with compensation support, all completed steps SHALL be compensated in reverse order.
 func TestProperty_CompensationCompleteness(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
@@ -712,19 +712,19 @@ func TestProperty_CompensationCompleteness(t *testing.T) {
 		// Execute transaction (should fail and compensate)
 		result, _ := coord.Execute(context.Background(), tx)
 
-		// Property: Transaction should be compensated
+		
 		if result.Status != TxStatusCompensated {
 			t.Fatalf("expected COMPENSATED status, got %s", result.Status)
 		}
 
-		// Property: All completed steps should be compensated
+		
 		// Steps 0 to failAtStep-1 should be compensated (failAtStep failed, so it wasn't completed)
 		expectedCompensations := failAtStep // Steps 0 to failAtStep-1
 		if len(compensationOrder) != expectedCompensations {
 			t.Fatalf("expected %d compensations, got %d: %v", expectedCompensations, len(compensationOrder), compensationOrder)
 		}
 
-		// Property: Compensation should be in reverse order
+		
 		// The first compensation should be for the step just before the failed step
 		for i := 0; i < len(compensationOrder); i++ {
 			expectedStepIndex := failAtStep - 1 - i
@@ -734,7 +734,7 @@ func TestProperty_CompensationCompleteness(t *testing.T) {
 			}
 		}
 
-		// Property: Verify step records in store
+		
 		steps, err := store.GetSteps(context.Background(), tx.TxID())
 		if err != nil {
 			t.Fatalf("failed to get steps: %v", err)
@@ -1359,4 +1359,217 @@ func TestCoordinator_ExecuteWithContextCancellation(t *testing.T) {
 	if result.Status != TxStatusFailed {
 		t.Errorf("expected status FAILED due to cancellation, got %s", result.Status)
 	}
+}
+
+// ============================================================================
+
+// compensation SHALL be executed in reverse order from step N-1 down to step 0.
+// ============================================================================
+
+func TestProperty_CompensationReverseOrder(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		store := newMockStore()
+		locker := newMockLocker()
+		breaker := newMockBreaker()
+		eventBus := event.NewMemoryEventBus()
+
+		coord := NewCoordinator(
+			WithStore(store),
+			WithLocker(locker),
+			WithBreaker(breaker),
+			WithEventBus(eventBus),
+			WithCoordinatorConfig(Config{
+				LockTTL:          30 * time.Second,
+				LockExtendPeriod: 10 * time.Second,
+				StepTimeout:      5 * time.Second,
+				TxTimeout:        30 * time.Second,
+				MaxRetries:       0, // No retries for compensation
+				RetryInterval:    100 * time.Millisecond,
+				IdempotencyTTL:   24 * time.Hour,
+			}),
+		)
+
+		// Generate random number of steps (at least 2 to have something to compensate)
+		numSteps := rapid.IntRange(2, 6).Draw(t, "numSteps")
+		// Fail at step 1 or later (so at least step 0 completes and needs compensation)
+		failAtStep := rapid.IntRange(1, numSteps-1).Draw(t, "failAtStep")
+
+		// Track compensation order
+		var compensationMu sync.Mutex
+		compensationOrder := make([]int, 0)
+
+		// Create step names deterministically
+		stepNames := make([]string, numSteps)
+		for i := 0; i < numSteps; i++ {
+			stepNames[i] = fmt.Sprintf("step-%d", i)
+		}
+
+		// Register steps with compensation support
+		for i := 0; i < numSteps; i++ {
+			step := newTestStep(stepNames[i])
+			step.supportsComp = true
+
+			stepIndex := i
+			step.executeFunc = func(ctx context.Context, txCtx *TxContext) error {
+				if stepIndex == failAtStep {
+					return errMockFailure
+				}
+				return nil
+			}
+			step.compensateFunc = func(ctx context.Context, txCtx *TxContext) error {
+				compensationMu.Lock()
+				compensationOrder = append(compensationOrder, stepIndex)
+				compensationMu.Unlock()
+				return nil
+			}
+			coord.RegisterStep(step)
+		}
+
+		// Build transaction with all steps
+		builder := NewTransaction("test-tx").WithStepRegistry(coord)
+		for _, name := range stepNames {
+			builder.AddStep(name)
+		}
+
+		tx, err := builder.Build()
+		if err != nil {
+			t.Fatalf("failed to build transaction: %v", err)
+		}
+
+		// Execute transaction (should fail and compensate)
+		result, _ := coord.Execute(context.Background(), tx)
+
+		
+		if result.Status != TxStatusCompensated {
+			t.Fatalf("expected COMPENSATED status, got %s", result.Status)
+		}
+
+		
+		// Steps 0 to failAtStep-1 should be compensated in reverse order
+		expectedCompensations := failAtStep // Steps 0 to failAtStep-1
+		if len(compensationOrder) != expectedCompensations {
+			t.Fatalf("expected %d compensations, got %d: %v", expectedCompensations, len(compensationOrder), compensationOrder)
+		}
+
+		// Verify reverse order: first compensation should be for step failAtStep-1,
+		// second for failAtStep-2, etc.
+		for i := 0; i < len(compensationOrder); i++ {
+			expectedStepIndex := failAtStep - 1 - i
+			if compensationOrder[i] != expectedStepIndex {
+				t.Fatalf("compensation order incorrect: expected step %d at position %d, got step %d. Full order: %v",
+					expectedStepIndex, i, compensationOrder[i], compensationOrder)
+			}
+		}
+	})
+}
+
+// ============================================================================
+
+// method SHALL be called exactly once.
+// ============================================================================
+
+func TestProperty_CompensationExactlyOnce(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		store := newMockStore()
+		locker := newMockLocker()
+		breaker := newMockBreaker()
+		eventBus := event.NewMemoryEventBus()
+
+		coord := NewCoordinator(
+			WithStore(store),
+			WithLocker(locker),
+			WithBreaker(breaker),
+			WithEventBus(eventBus),
+			WithCoordinatorConfig(Config{
+				LockTTL:          30 * time.Second,
+				LockExtendPeriod: 10 * time.Second,
+				StepTimeout:      5 * time.Second,
+				TxTimeout:        30 * time.Second,
+				MaxRetries:       0, // No retries for compensation
+				RetryInterval:    100 * time.Millisecond,
+				IdempotencyTTL:   24 * time.Hour,
+			}),
+		)
+
+		// Generate random number of steps (at least 2 to have something to compensate)
+		numSteps := rapid.IntRange(2, 6).Draw(t, "numSteps")
+		// Fail at step 1 or later (so at least step 0 completes and needs compensation)
+		failAtStep := rapid.IntRange(1, numSteps-1).Draw(t, "failAtStep")
+
+		// Track compensation call counts per step
+		var compensationMu sync.Mutex
+		compensationCounts := make(map[int]int)
+
+		// Create step names deterministically
+		stepNames := make([]string, numSteps)
+		for i := 0; i < numSteps; i++ {
+			stepNames[i] = fmt.Sprintf("step-%d", i)
+		}
+
+		// Register steps with compensation support
+		for i := 0; i < numSteps; i++ {
+			step := newTestStep(stepNames[i])
+			step.supportsComp = true
+
+			stepIndex := i
+			step.executeFunc = func(ctx context.Context, txCtx *TxContext) error {
+				if stepIndex == failAtStep {
+					return errMockFailure
+				}
+				return nil
+			}
+			step.compensateFunc = func(ctx context.Context, txCtx *TxContext) error {
+				compensationMu.Lock()
+				compensationCounts[stepIndex]++
+				compensationMu.Unlock()
+				return nil
+			}
+			coord.RegisterStep(step)
+		}
+
+		// Build transaction with all steps
+		builder := NewTransaction("test-tx").WithStepRegistry(coord)
+		for _, name := range stepNames {
+			builder.AddStep(name)
+		}
+
+		tx, err := builder.Build()
+		if err != nil {
+			t.Fatalf("failed to build transaction: %v", err)
+		}
+
+		// Execute transaction (should fail and compensate)
+		result, _ := coord.Execute(context.Background(), tx)
+
+		
+		if result.Status != TxStatusCompensated {
+			t.Fatalf("expected COMPENSATED status, got %s", result.Status)
+		}
+
+		
+		for stepIdx := 0; stepIdx < failAtStep; stepIdx++ {
+			count := compensationCounts[stepIdx]
+			if count != 1 {
+				t.Fatalf("step %d compensation called %d times, expected exactly 1", stepIdx, count)
+			}
+		}
+
+		
+		for stepIdx := failAtStep; stepIdx < numSteps; stepIdx++ {
+			count := compensationCounts[stepIdx]
+			if count != 0 {
+				t.Fatalf("step %d (failed or not executed) compensation called %d times, expected 0", stepIdx, count)
+			}
+		}
+
+		
+		totalCompensations := 0
+		for _, count := range compensationCounts {
+			totalCompensations += count
+		}
+		expectedCompensations := failAtStep // Steps 0 to failAtStep-1
+		if totalCompensations != expectedCompensations {
+			t.Fatalf("total compensations %d does not match expected %d", totalCompensations, expectedCompensations)
+		}
+	})
 }

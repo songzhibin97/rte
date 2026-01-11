@@ -280,13 +280,6 @@ func TestWithInput_EmptyMap(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Property Test for Context Clone Independence
-// Property 1: Context Clone Independence
-// *For any* TxContext, cloning should produce an independent copy where
-// modifications to the clone do not affect the original context.
-// ============================================================================
-
 func TestProperty_ContextCloneIndependence(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		// Generate random context data
@@ -338,7 +331,6 @@ func TestProperty_ContextCloneIndependence(t *testing.T) {
 		// Clone the context
 		clone := original.Clone()
 
-		// Property 1: Clone should have same values as original
 		if clone.TxID != original.TxID {
 			rt.Fatalf("TxID mismatch after clone")
 		}
@@ -376,7 +368,6 @@ func TestProperty_ContextCloneIndependence(t *testing.T) {
 			}
 		}
 
-		// Property 2: Modifications to clone should not affect original
 		// Modify clone
 		clone.TxID = "modified-tx-id"
 		clone.TxType = "modified-type"

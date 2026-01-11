@@ -317,14 +317,6 @@ func TestIsStepCompensatable(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Property Test for State Transition Validity
-// Property 3: State Transition Validity
-// *For any* pair of transaction states (from, to), ValidateTxTransition should
-// return true if and only if the transition is defined in the valid state machine.
-// Similarly for step states.
-// ============================================================================
-
 func TestProperty_StateTransitionValidity(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		// Test transaction state transitions
@@ -348,13 +340,13 @@ func TestProperty_StateTransitionValidity(t *testing.T) {
 
 		actualValid := ValidateTxTransition(fromTx, toTx)
 
-		// Property: ValidateTxTransition should match the state machine definition
+		
 		if actualValid != expectedValid {
 			rt.Fatalf("ValidateTxTransition(%s, %s) = %v, expected %v",
 				fromTx, toTx, actualValid, expectedValid)
 		}
 
-		// Property: Terminal states should have no valid outgoing transitions
+		
 		if IsTxTerminal(fromTx) && actualValid {
 			rt.Fatalf("Terminal state %s should not allow transition to %s", fromTx, toTx)
 		}
@@ -380,13 +372,13 @@ func TestProperty_StateTransitionValidity(t *testing.T) {
 
 		actualStepValid := ValidateStepTransition(fromStep, toStep)
 
-		// Property: ValidateStepTransition should match the state machine definition
+		
 		if actualStepValid != expectedStepValid {
 			rt.Fatalf("ValidateStepTransition(%s, %s) = %v, expected %v",
 				fromStep, toStep, actualStepValid, expectedStepValid)
 		}
 
-		// Property: Terminal step states should have no valid outgoing transitions
+		
 		// (except COMPLETED which can go to COMPENSATING)
 		if IsStepTerminal(fromStep) && fromStep != StepStatusCompleted && actualStepValid {
 			rt.Fatalf("Terminal step state %s should not allow transition to %s", fromStep, toStep)
@@ -394,7 +386,6 @@ func TestProperty_StateTransitionValidity(t *testing.T) {
 	})
 }
 
-// Additional property test for consistency between terminal and transition functions
 func TestProperty_TerminalStateConsistency(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		// Test transaction states
@@ -404,13 +395,13 @@ func TestProperty_TerminalStateConsistency(t *testing.T) {
 		isTerminal := IsTxTerminal(txStatus)
 		validTargets := validTxTransitions[txStatus]
 
-		// Property: Terminal states should have empty valid transitions
+		
 		if isTerminal && len(validTargets) > 0 {
 			rt.Fatalf("Terminal state %s should have no valid transitions, but has %v",
 				txStatus, validTargets)
 		}
 
-		// Property: Non-terminal states should have at least one valid transition
+		
 		// (except for edge cases in the state machine)
 		if !isTerminal && txStatus != TxStatusFailed && len(validTargets) == 0 {
 			rt.Fatalf("Non-terminal state %s should have valid transitions", txStatus)
@@ -423,7 +414,7 @@ func TestProperty_TerminalStateConsistency(t *testing.T) {
 		isStepTerminal := IsStepTerminal(stepStatus)
 		validStepTargets := validStepTransitions[stepStatus]
 
-		// Property: Terminal step states (except COMPLETED) should have empty valid transitions
+		
 		if isStepTerminal && stepStatus != StepStatusCompleted && len(validStepTargets) > 0 {
 			rt.Fatalf("Terminal step state %s should have no valid transitions, but has %v",
 				stepStatus, validStepTargets)

@@ -21,8 +21,7 @@ import (
 )
 
 // ============================================================================
-// Property 1: 筛选结果一致性 (Filter Result Consistency)
-// *For any* filter conditions (status, type, time range), all returned
+
 // transactions SHALL satisfy the filter conditions.
 // ============================================================================
 
@@ -91,7 +90,7 @@ func TestProperty_FilterResultConsistency(t *testing.T) {
 			rt.Fatalf("failed to list transactions: %v", err)
 		}
 
-		// Property: All returned transactions must satisfy filter conditions
+		
 		for _, tx := range result.Transactions {
 			if filterByStatus && tx.Status != expectedStatus {
 				rt.Fatalf("transaction %s has status %s, expected %s", tx.TxID, tx.Status, expectedStatus)
@@ -114,8 +113,7 @@ func TestProperty_FilterResultConsistency(t *testing.T) {
 }
 
 // ============================================================================
-// Property 2: 事务详情完整性 (Transaction Detail Completeness)
-// *For any* transaction, getting its details SHALL include all required fields
+
 // (ID, type, status, time info, input/output).
 // ============================================================================
 
@@ -161,7 +159,7 @@ func TestProperty_TransactionDetailCompleteness(t *testing.T) {
 			rt.Fatalf("failed to get transaction: %v", err)
 		}
 
-		// Property: Detail must contain all required fields
+		
 		if detail.Transaction == nil {
 			rt.Fatal("transaction detail is nil")
 		}
@@ -178,12 +176,12 @@ func TestProperty_TransactionDetailCompleteness(t *testing.T) {
 			rt.Fatalf("expected Status %s, got %s", status, detail.Transaction.Status)
 		}
 
-		// Property: CreatedAt must be set
+		
 		if detail.Transaction.CreatedAt.IsZero() {
 			rt.Fatal("CreatedAt is not set")
 		}
 
-		// Property: Steps must be returned
+		
 		if len(detail.Steps) != numSteps {
 			rt.Fatalf("expected %d steps, got %d", numSteps, len(detail.Steps))
 		}
@@ -191,8 +189,7 @@ func TestProperty_TransactionDetailCompleteness(t *testing.T) {
 }
 
 // ============================================================================
-// Property 3: 步骤数量一致性 (Step Count Consistency)
-// *For any* transaction, the number of steps in the detail SHALL equal
+
 // the transaction's TotalSteps field.
 // ============================================================================
 
@@ -225,13 +222,13 @@ func TestProperty_StepCountConsistency(t *testing.T) {
 			rt.Fatalf("failed to get transaction: %v", err)
 		}
 
-		// Property: Step count must equal TotalSteps
+		
 		if len(detail.Steps) != detail.Transaction.TotalSteps {
 			rt.Fatalf("step count %d does not match TotalSteps %d",
 				len(detail.Steps), detail.Transaction.TotalSteps)
 		}
 
-		// Property: Step count must equal the number of step names
+		
 		if len(detail.Steps) != len(stepNames) {
 			rt.Fatalf("step count %d does not match expected %d",
 				len(detail.Steps), len(stepNames))
@@ -240,8 +237,7 @@ func TestProperty_StepCountConsistency(t *testing.T) {
 }
 
 // ============================================================================
-// Property 6: 强制完成状态转换 (Force Complete State Transition)
-// *For any* transaction in stuck state (LOCKED, EXECUTING, CONFIRMING),
+
 // force complete SHALL transition it to COMPLETED.
 // ============================================================================
 
@@ -270,13 +266,13 @@ func TestProperty_ForceCompleteStateTransition(t *testing.T) {
 			rt.Fatalf("failed to force complete: %v", err)
 		}
 
-		// Property: Status must be COMPLETED
+		
 		updatedTx, _ := store.GetTransaction(context.Background(), txID)
 		if updatedTx.Status != rte.TxStatusCompleted {
 			rt.Fatalf("expected COMPLETED status, got %s", updatedTx.Status)
 		}
 
-		// Property: CompletedAt must be set
+		
 		if updatedTx.CompletedAt == nil {
 			rt.Fatal("CompletedAt should be set after force complete")
 		}
@@ -284,8 +280,7 @@ func TestProperty_ForceCompleteStateTransition(t *testing.T) {
 }
 
 // ============================================================================
-// Property 7: 强制取消状态转换 (Force Cancel State Transition)
-// *For any* transaction in cancellable state (CREATED, LOCKED, EXECUTING, FAILED),
+
 // force cancel SHALL transition it to CANCELLED or COMPENSATED.
 // ============================================================================
 
@@ -315,7 +310,7 @@ func TestProperty_ForceCancelStateTransition(t *testing.T) {
 			rt.Fatalf("failed to force cancel: %v", err)
 		}
 
-		// Property: Status must be CANCELLED or COMPENSATED
+		
 		updatedTx, _ := store.GetTransaction(context.Background(), txID)
 		validStatuses := map[rte.TxStatus]bool{
 			rte.TxStatusCancelled:   true,
@@ -328,8 +323,7 @@ func TestProperty_ForceCancelStateTransition(t *testing.T) {
 }
 
 // ============================================================================
-// Property 8: 重试计数递增 (Retry Count Increment)
-// *For any* failed transaction, retry SHALL increment the retry count.
+
 // ============================================================================
 
 func TestProperty_RetryCountIncrement(t *testing.T) {
@@ -387,7 +381,7 @@ func TestProperty_RetryCountIncrement(t *testing.T) {
 			rt.Fatalf("failed to retry transaction: %v", err)
 		}
 
-		// Property: Retry count must be incremented (at least by 1)
+		
 		updatedTx, _ := store.GetTransaction(context.Background(), txID)
 		if updatedTx.RetryCount <= initialRetryCount {
 			rt.Fatalf("expected retry count > %d, got %d", initialRetryCount, updatedTx.RetryCount)
@@ -396,8 +390,7 @@ func TestProperty_RetryCountIncrement(t *testing.T) {
 }
 
 // ============================================================================
-// Property 9: 统计数据一致性 (Stats Data Consistency)
-// *For any* moment, the sum of transactions by status SHALL equal total transactions.
+
 // ============================================================================
 
 func TestProperty_StatsDataConsistency(t *testing.T) {
@@ -462,27 +455,27 @@ func TestProperty_StatsDataConsistency(t *testing.T) {
 			rt.Fatalf("failed to get stats: %v", err)
 		}
 
-		// Property: Total must equal sum of all transactions
+		
 		if stats.TotalTransactions != int64(numTxs) {
 			rt.Fatalf("expected total %d, got %d", numTxs, stats.TotalTransactions)
 		}
 
-		// Property: Pending count must match
+		
 		if stats.PendingTransactions != expectedPending {
 			rt.Fatalf("expected pending %d, got %d", expectedPending, stats.PendingTransactions)
 		}
 
-		// Property: Failed count must match
+		
 		if stats.FailedTransactions != expectedFailed {
 			rt.Fatalf("expected failed %d, got %d", expectedFailed, stats.FailedTransactions)
 		}
 
-		// Property: Completed count must match
+		
 		if stats.CompletedTransactions != expectedCompleted {
 			rt.Fatalf("expected completed %d, got %d", expectedCompleted, stats.CompletedTransactions)
 		}
 
-		// Property: Compensated count must match
+		
 		if stats.CompensatedTransactions != expectedCompensated {
 			rt.Fatalf("expected compensated %d, got %d", expectedCompensated, stats.CompensatedTransactions)
 		}
@@ -490,8 +483,7 @@ func TestProperty_StatsDataConsistency(t *testing.T) {
 }
 
 // ============================================================================
-// Property 10: 恢复Worker统计一致性 (Recovery Worker Stats Consistency)
-// *For any* moment, the recovery worker stats SHALL reflect the actual worker state.
+
 // ============================================================================
 
 func TestProperty_RecoveryWorkerStatsConsistency(t *testing.T) {
@@ -527,22 +519,22 @@ func TestProperty_RecoveryWorkerStatsConsistency(t *testing.T) {
 		var stats RecoveryStatsResponse
 		json.Unmarshal(dataBytes, &stats)
 
-		// Property: IsRunning must match worker state
+		
 		if stats.IsRunning != workerStats.IsRunning {
 			rt.Fatalf("expected IsRunning=%v, got %v", workerStats.IsRunning, stats.IsRunning)
 		}
 
-		// Property: ScannedCount must match worker state
+		
 		if stats.ScannedCount != workerStats.ScannedCount {
 			rt.Fatalf("expected ScannedCount=%d, got %d", workerStats.ScannedCount, stats.ScannedCount)
 		}
 
-		// Property: ProcessedCount must match worker state
+		
 		if stats.ProcessedCount != workerStats.ProcessedCount {
 			rt.Fatalf("expected ProcessedCount=%d, got %d", workerStats.ProcessedCount, stats.ProcessedCount)
 		}
 
-		// Property: FailedCount must match worker state
+		
 		if stats.FailedCount != workerStats.FailedCount {
 			rt.Fatalf("expected FailedCount=%d, got %d", workerStats.FailedCount, stats.FailedCount)
 		}
@@ -550,8 +542,7 @@ func TestProperty_RecoveryWorkerStatsConsistency(t *testing.T) {
 }
 
 // ============================================================================
-// Property 11: 熔断器状态有效性 (Circuit Breaker State Validity)
-// *For any* circuit breaker, its state SHALL be one of CLOSED, OPEN, or HALF_OPEN.
+
 // ============================================================================
 
 func TestProperty_CircuitBreakerStateValidity(t *testing.T) {
@@ -564,7 +555,7 @@ func TestProperty_CircuitBreakerStateValidity(t *testing.T) {
 			serviceName := fmt.Sprintf("service-%d", i)
 			cb := breaker.Get(serviceName)
 
-			// Property: State must be valid
+			
 			state := cb.State()
 			validStates := map[circuit.State]bool{
 				circuit.StateClosed:   true,
@@ -579,8 +570,7 @@ func TestProperty_CircuitBreakerStateValidity(t *testing.T) {
 }
 
 // ============================================================================
-// Property 12: 熔断器重置 (Circuit Breaker Reset)
-// *For any* circuit breaker, reset SHALL transition it to CLOSED state.
+
 // ============================================================================
 
 func TestProperty_CircuitBreakerReset(t *testing.T) {
@@ -613,7 +603,7 @@ func TestProperty_CircuitBreakerReset(t *testing.T) {
 			rt.Fatalf("expected status 200, got %d", w.Code)
 		}
 
-		// Property: State must be CLOSED after reset
+		
 		if cb.State() != circuit.StateClosed {
 			rt.Fatalf("expected CLOSED state after reset, got %s", cb.State())
 		}
@@ -621,8 +611,7 @@ func TestProperty_CircuitBreakerReset(t *testing.T) {
 }
 
 // ============================================================================
-// Property 14: API响应格式一致性 (API Response Format Consistency)
-// *For any* API request, the response SHALL conform to the unified JSON format
+
 // (containing success, data or error fields).
 // ============================================================================
 
@@ -660,21 +649,21 @@ func TestProperty_APIResponseFormatConsistency(t *testing.T) {
 			path   string
 			body   string
 		}{
-			// Transaction list and detail APIs (Requirements 10.1, 10.2)
+			// Transaction list and detail APIs 
 			{"GET", "/api/transactions", ""},
 			{"GET", "/api/transactions?status=COMPLETED", ""},
 			{"GET", "/api/transactions?tx_type=type-a", ""},
 			{"GET", "/api/transactions/tx-1", ""},
 			{"GET", "/api/transactions/non-existent", ""},
 
-			// Transaction operation APIs (Requirements 10.3, 10.4, 10.5)
+			// Transaction operation APIs 
 			{"POST", "/api/transactions/tx-stuck/force-complete", `{"reason":"test force complete"}`},
 			{"POST", "/api/transactions/tx-cancel/force-cancel", `{"reason":"test force cancel"}`},
 			{"POST", "/api/transactions/non-existent/force-complete", `{"reason":"test"}`},
 			{"POST", "/api/transactions/non-existent/force-cancel", `{"reason":"test"}`},
 			{"POST", "/api/transactions/non-existent/retry", ""},
 
-			// Stats APIs (Requirements 10.6, 10.7)
+			// Stats APIs 
 			{"GET", "/api/stats", ""},
 			{"GET", "/api/recovery/stats", ""},
 
@@ -701,16 +690,16 @@ func TestProperty_APIResponseFormatConsistency(t *testing.T) {
 
 		handler.ServeHTTP(w, req)
 
-		// Property: Response must be valid JSON
+		
 		var resp APIResponse
 		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 			rt.Fatalf("endpoint %s %s: response is not valid JSON: %v, body: %s",
 				ep.method, ep.path, err, w.Body.String())
 		}
 
-		// Property: Response must have success field (validated by JSON decode)
+		
 
-		// Property: If success is false, error must be present with code and message
+		
 		if !resp.Success {
 			if resp.Error == nil {
 				rt.Fatalf("endpoint %s %s: failed response must have error field",
@@ -726,7 +715,7 @@ func TestProperty_APIResponseFormatConsistency(t *testing.T) {
 			}
 		}
 
-		// Property: HTTP status code should be appropriate
+		
 		// Success responses: 200
 		// Client errors (not found, invalid request): 400, 404
 		// Server errors: 500
@@ -741,7 +730,7 @@ func TestProperty_APIResponseFormatConsistency(t *testing.T) {
 				ep.method, ep.path, w.Code)
 		}
 
-		// Property: Success field should match HTTP status code semantics
+		
 		if resp.Success && w.Code != http.StatusOK {
 			rt.Fatalf("endpoint %s %s: success=true but status code is %d",
 				ep.method, ep.path, w.Code)
@@ -754,8 +743,7 @@ func TestProperty_APIResponseFormatConsistency(t *testing.T) {
 }
 
 // ============================================================================
-// Property 13: 事件筛选一致性 (Event Filter Consistency)
-// *For any* event type filter, all returned events SHALL match that type.
+
 // ============================================================================
 
 func TestProperty_EventFilterConsistency(t *testing.T) {
@@ -808,14 +796,14 @@ func TestProperty_EventFilterConsistency(t *testing.T) {
 		}
 		results := eventStore.List(filter)
 
-		// Property: All returned events must match the filter type
+		
 		for _, e := range results {
 			if e.Type != filterType {
 				rt.Fatalf("event type %s does not match filter type %s", e.Type, filterType)
 			}
 		}
 
-		// Property: Count should match the number of filtered results
+		
 		count := eventStore.Count(filter)
 		if count != len(results) {
 			rt.Fatalf("count %d does not match results length %d", count, len(results))
@@ -861,14 +849,14 @@ func TestProperty_EventStoreTxIDFilter(t *testing.T) {
 		}
 		results := eventStore.List(filter)
 
-		// Property: All returned events must have the filtered tx_id
+		
 		for _, e := range results {
 			if e.TxID != filterTxID {
 				rt.Fatalf("event tx_id %s does not match filter tx_id %s", e.TxID, filterTxID)
 			}
 		}
 
-		// Property: Should return exactly numEventsPerTx events
+		
 		if len(results) != numEventsPerTx {
 			rt.Fatalf("expected %d events for tx %s, got %d", numEventsPerTx, filterTxID, len(results))
 		}
@@ -890,12 +878,12 @@ func TestProperty_EventStoreMaxEvents(t *testing.T) {
 			eventStore.Store(e)
 		}
 
-		// Property: Store should not exceed max events
+		
 		if eventStore.Len() > maxEvents {
 			rt.Fatalf("event store has %d events, exceeds max %d", eventStore.Len(), maxEvents)
 		}
 
-		// Property: Store should have exactly maxEvents
+		
 		if eventStore.Len() != maxEvents {
 			rt.Fatalf("expected %d events, got %d", maxEvents, eventStore.Len())
 		}
@@ -919,7 +907,7 @@ func TestProperty_EventStoreOrdering(t *testing.T) {
 		// Get all events
 		results := eventStore.List(EventFilter{Limit: 1000})
 
-		// Property: Events should be in reverse order (newest first)
+		
 		for i := 1; i < len(results); i++ {
 			if results[i].ID > results[i-1].ID {
 				rt.Fatalf("events not in reverse order: event %d (id=%d) comes after event %d (id=%d)",
@@ -954,16 +942,344 @@ func TestProperty_EventHandlerIntegration(t *testing.T) {
 			}
 		}
 
-		// Property: All events should be stored
+		
 		if eventStore.Len() != numEvents {
 			rt.Fatalf("expected %d events, got %d", numEvents, eventStore.Len())
 		}
 
-		// Property: All tx_ids should be present
+		
 		results := eventStore.List(EventFilter{Limit: 1000})
 		for _, e := range results {
 			if !expectedTxIDs[e.TxID] {
 				rt.Fatalf("unexpected tx_id %s in results", e.TxID)
+			}
+		}
+	})
+}
+
+// ============================================================================
+
+// the transaction is in a valid state before proceeding.
+// ============================================================================
+
+func TestProperty_AdminForceOperationValidation(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		store := newMockStore()
+		eventBus := event.NewMemoryEventBus()
+		admin := NewAdmin(
+			WithAdminStore(store),
+			WithAdminEventBus(eventBus),
+		)
+
+		// Define all possible transaction statuses
+		allStatuses := []rte.TxStatus{
+			rte.TxStatusCreated,
+			rte.TxStatusLocked,
+			rte.TxStatusExecuting,
+			rte.TxStatusConfirming,
+			rte.TxStatusCompleted,
+			rte.TxStatusFailed,
+			rte.TxStatusCompensating,
+			rte.TxStatusCompensated,
+			rte.TxStatusCompensationFailed,
+			rte.TxStatusTimeout,
+			rte.TxStatusCancelled,
+		}
+
+		// Valid states for force-complete: LOCKED, EXECUTING, CONFIRMING
+		validForceCompleteStates := map[rte.TxStatus]bool{
+			rte.TxStatusLocked:     true,
+			rte.TxStatusExecuting:  true,
+			rte.TxStatusConfirming: true,
+		}
+
+		// Generate random transaction with random status
+		txID := fmt.Sprintf("tx-%d", rapid.IntRange(1, 10000).Draw(rt, "txID"))
+		statusIdx := rapid.IntRange(0, len(allStatuses)-1).Draw(rt, "statusIdx")
+		status := allStatuses[statusIdx]
+
+		tx := rte.NewStoreTx(txID, "test-type", []string{"step1"})
+		tx.Status = status
+		store.CreateTransaction(context.Background(), tx)
+
+		// Create step record
+		step := rte.NewStoreStepRecord(txID, 0, "step1")
+		store.CreateStep(context.Background(), step)
+
+		// Test force-complete operation
+		reason := rapid.StringMatching(`[a-z ]{5,20}`).Draw(rt, "reason")
+		forceCompleteErr := admin.ForceComplete(context.Background(), txID, reason)
+
+		
+		if validForceCompleteStates[status] {
+			// Should succeed
+			if forceCompleteErr != nil {
+				rt.Fatalf("force-complete should succeed for status %s, but got error: %v", status, forceCompleteErr)
+			}
+			// Verify status changed to COMPLETED
+			updatedTx, _ := store.GetTransaction(context.Background(), txID)
+			if updatedTx.Status != rte.TxStatusCompleted {
+				rt.Fatalf("expected COMPLETED status after force-complete, got %s", updatedTx.Status)
+			}
+		} else {
+			// Should fail with invalid state error
+			if forceCompleteErr == nil {
+				rt.Fatalf("force-complete should fail for status %s, but succeeded", status)
+			}
+			if !strings.Contains(forceCompleteErr.Error(), "invalid transaction state") &&
+				!strings.Contains(forceCompleteErr.Error(), "cannot force complete") {
+				rt.Fatalf("expected invalid state error for status %s, got: %v", status, forceCompleteErr)
+			}
+		}
+	})
+}
+
+func TestProperty_AdminForceCancelValidation(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		store := newMockStore()
+		eventBus := event.NewMemoryEventBus()
+		admin := NewAdmin(
+			WithAdminStore(store),
+			WithAdminEventBus(eventBus),
+		)
+
+		// Define all possible transaction statuses
+		allStatuses := []rte.TxStatus{
+			rte.TxStatusCreated,
+			rte.TxStatusLocked,
+			rte.TxStatusExecuting,
+			rte.TxStatusConfirming,
+			rte.TxStatusCompleted,
+			rte.TxStatusFailed,
+			rte.TxStatusCompensating,
+			rte.TxStatusCompensated,
+			rte.TxStatusCompensationFailed,
+			rte.TxStatusTimeout,
+			rte.TxStatusCancelled,
+		}
+
+		// Valid states for force-cancel: CREATED, LOCKED, EXECUTING, FAILED
+		validForceCancelStates := map[rte.TxStatus]bool{
+			rte.TxStatusCreated:   true,
+			rte.TxStatusLocked:    true,
+			rte.TxStatusExecuting: true,
+			rte.TxStatusFailed:    true,
+		}
+
+		// Generate random transaction with random status
+		txID := fmt.Sprintf("tx-%d", rapid.IntRange(1, 10000).Draw(rt, "txID"))
+		statusIdx := rapid.IntRange(0, len(allStatuses)-1).Draw(rt, "statusIdx")
+		status := allStatuses[statusIdx]
+
+		tx := rte.NewStoreTx(txID, "test-type", []string{"step1"})
+		tx.Status = status
+		store.CreateTransaction(context.Background(), tx)
+
+		// Create step record
+		step := rte.NewStoreStepRecord(txID, 0, "step1")
+		store.CreateStep(context.Background(), step)
+
+		// Test force-cancel operation
+		reason := rapid.StringMatching(`[a-z ]{5,20}`).Draw(rt, "reason")
+		forceCancelErr := admin.ForceCancel(context.Background(), txID, reason)
+
+		
+		if validForceCancelStates[status] {
+			// Should succeed
+			if forceCancelErr != nil {
+				rt.Fatalf("force-cancel should succeed for status %s, but got error: %v", status, forceCancelErr)
+			}
+			// Verify status changed to CANCELLED or COMPENSATED
+			updatedTx, _ := store.GetTransaction(context.Background(), txID)
+			validEndStates := map[rte.TxStatus]bool{
+				rte.TxStatusCancelled:   true,
+				rte.TxStatusCompensated: true,
+			}
+			if !validEndStates[updatedTx.Status] {
+				rt.Fatalf("expected CANCELLED or COMPENSATED status after force-cancel, got %s", updatedTx.Status)
+			}
+		} else {
+			// Should fail with invalid state error
+			if forceCancelErr == nil {
+				rt.Fatalf("force-cancel should fail for status %s, but succeeded", status)
+			}
+			if !strings.Contains(forceCancelErr.Error(), "invalid transaction state") &&
+				!strings.Contains(forceCancelErr.Error(), "cannot cancel") {
+				rt.Fatalf("expected invalid state error for status %s, got: %v", status, forceCancelErr)
+			}
+		}
+	})
+}
+
+func TestProperty_AdminRetryValidation(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		store := newMockStore()
+		eventBus := event.NewMemoryEventBus()
+
+		// Create coordinator with test step
+		coord := rte.NewCoordinator(
+			rte.WithStore(store),
+			rte.WithEventBus(eventBus),
+			rte.WithCoordinatorConfig(rte.Config{
+				LockTTL:          30 * time.Second,
+				LockExtendPeriod: 10 * time.Second,
+				StepTimeout:      5 * time.Second,
+				TxTimeout:        30 * time.Second,
+				MaxRetries:       10,
+				RetryInterval:    100 * time.Millisecond,
+			}),
+		)
+
+		// Register a step that always succeeds
+		testStep := newTestStep("step1")
+		testStep.executeFunc = func(ctx context.Context, txCtx *rte.TxContext) error {
+			return nil
+		}
+		coord.RegisterStep(testStep)
+
+		admin := NewAdmin(
+			WithAdminStore(store),
+			WithAdminEventBus(eventBus),
+			WithAdminCoordinator(coord),
+		)
+
+		// Define all possible transaction statuses
+		allStatuses := []rte.TxStatus{
+			rte.TxStatusCreated,
+			rte.TxStatusLocked,
+			rte.TxStatusExecuting,
+			rte.TxStatusConfirming,
+			rte.TxStatusCompleted,
+			rte.TxStatusFailed,
+			rte.TxStatusCompensating,
+			rte.TxStatusCompensated,
+			rte.TxStatusCompensationFailed,
+			rte.TxStatusTimeout,
+			rte.TxStatusCancelled,
+		}
+
+		// Only FAILED status is valid for retry
+		validRetryStates := map[rte.TxStatus]bool{
+			rte.TxStatusFailed: true,
+		}
+
+		// Generate random transaction with random status
+		txID := fmt.Sprintf("tx-%d", rapid.IntRange(1, 10000).Draw(rt, "txID"))
+		statusIdx := rapid.IntRange(0, len(allStatuses)-1).Draw(rt, "statusIdx")
+		status := allStatuses[statusIdx]
+
+		tx := rte.NewStoreTx(txID, "test-type", []string{"step1"})
+		tx.Status = status
+		tx.MaxRetries = 10
+		tx.RetryCount = rapid.IntRange(0, 5).Draw(rt, "retryCount")
+		tx.Context = &rte.StoreTxContext{
+			TxID:   txID,
+			TxType: "test-type",
+			Input:  make(map[string]any),
+			Output: make(map[string]any),
+		}
+		store.CreateTransaction(context.Background(), tx)
+
+		// Create step record
+		step := rte.NewStoreStepRecord(txID, 0, "step1")
+		store.CreateStep(context.Background(), step)
+
+		// Test retry operation
+		retryErr := admin.RetryTransaction(context.Background(), txID)
+
+		
+		if validRetryStates[status] {
+			// Should succeed
+			if retryErr != nil {
+				rt.Fatalf("retry should succeed for status %s, but got error: %v", status, retryErr)
+			}
+		} else {
+			// Should fail with invalid state error
+			if retryErr == nil {
+				rt.Fatalf("retry should fail for status %s, but succeeded", status)
+			}
+			if !strings.Contains(retryErr.Error(), "invalid transaction state") &&
+				!strings.Contains(retryErr.Error(), "can only retry failed") {
+				rt.Fatalf("expected invalid state error for status %s, got: %v", status, retryErr)
+			}
+		}
+	})
+}
+
+// TestProperty_AdminRetryMaxRetriesValidation tests that retry is rejected when max retries exceeded
+func TestProperty_AdminRetryMaxRetriesValidation(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		store := newMockStore()
+		eventBus := event.NewMemoryEventBus()
+
+		// Create coordinator with test step
+		coord := rte.NewCoordinator(
+			rte.WithStore(store),
+			rte.WithEventBus(eventBus),
+			rte.WithCoordinatorConfig(rte.Config{
+				LockTTL:          30 * time.Second,
+				LockExtendPeriod: 10 * time.Second,
+				StepTimeout:      5 * time.Second,
+				TxTimeout:        30 * time.Second,
+				MaxRetries:       10,
+				RetryInterval:    100 * time.Millisecond,
+			}),
+		)
+
+		// Register a step that always succeeds
+		testStep := newTestStep("step1")
+		testStep.executeFunc = func(ctx context.Context, txCtx *rte.TxContext) error {
+			return nil
+		}
+		coord.RegisterStep(testStep)
+
+		admin := NewAdmin(
+			WithAdminStore(store),
+			WithAdminEventBus(eventBus),
+			WithAdminCoordinator(coord),
+		)
+
+		// Generate random max retries and retry count
+		maxRetries := rapid.IntRange(1, 10).Draw(rt, "maxRetries")
+		// Generate retry count that may or may not exceed max
+		retryCount := rapid.IntRange(0, maxRetries+5).Draw(rt, "retryCount")
+
+		txID := fmt.Sprintf("tx-%d", rapid.IntRange(1, 10000).Draw(rt, "txID"))
+
+		tx := rte.NewStoreTx(txID, "test-type", []string{"step1"})
+		tx.Status = rte.TxStatusFailed
+		tx.MaxRetries = maxRetries
+		tx.RetryCount = retryCount
+		tx.Context = &rte.StoreTxContext{
+			TxID:   txID,
+			TxType: "test-type",
+			Input:  make(map[string]any),
+			Output: make(map[string]any),
+		}
+		store.CreateTransaction(context.Background(), tx)
+
+		// Create step record
+		step := rte.NewStoreStepRecord(txID, 0, "step1")
+		store.CreateStep(context.Background(), step)
+
+		// Test retry operation
+		retryErr := admin.RetryTransaction(context.Background(), txID)
+
+		
+		if retryCount >= maxRetries {
+			// Should fail with max retries exceeded error
+			if retryErr == nil {
+				rt.Fatalf("retry should fail when retryCount(%d) >= maxRetries(%d), but succeeded", retryCount, maxRetries)
+			}
+			if !strings.Contains(retryErr.Error(), "max retries") &&
+				!strings.Contains(retryErr.Error(), "exceeded") &&
+				!strings.Contains(retryErr.Error(), "retry limit") {
+				rt.Fatalf("expected max retries exceeded error, got: %v", retryErr)
+			}
+		} else {
+			// Should succeed
+			if retryErr != nil {
+				rt.Fatalf("retry should succeed when retryCount(%d) < maxRetries(%d), but got error: %v", retryCount, maxRetries, retryErr)
 			}
 		}
 	})

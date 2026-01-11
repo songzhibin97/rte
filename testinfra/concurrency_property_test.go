@@ -20,15 +20,14 @@ import (
 )
 
 // ============================================================================
-// Property 4: Idempotent Execution (幂等执行)
+
 // For any step that supports idempotency, executing the step multiple times
 // with the same idempotency key SHALL produce the same result and execute
 // the actual operation at most once.
 // ============================================================================
 
 // TestProperty_IdempotentExecution_Integration tests idempotent execution using real MySQL and Redis.
-// Property 4: Idempotent Execution
-// *For any* step that supports idempotency, executing the step multiple times
+
 // with the same idempotency key SHALL produce the same result and execute
 // the actual operation at most once.
 func TestProperty_IdempotentExecution_Integration(t *testing.T) {
@@ -106,7 +105,7 @@ func TestProperty_IdempotentExecution_Integration(t *testing.T) {
 
 		wg.Wait()
 
-		// Property: The actual operation should be executed at most once
+		
 		// Note: Due to race conditions in concurrent execution, we may have more than 1 execution
 		// if the idempotency check and mark are not atomic. However, for sequential execution,
 		// we should have exactly 1 execution.
@@ -114,7 +113,7 @@ func TestProperty_IdempotentExecution_Integration(t *testing.T) {
 			rt.Fatalf("Expected at least 1 execution, got 0")
 		}
 
-		// Property: All successful results should have the same output
+		
 		var firstResultVal int
 		firstResultSet := false
 		for i, result := range results {
@@ -195,14 +194,13 @@ func (s *idempotentTestStep) IdempotencyKey(txCtx *rte.TxContext) string {
 var _ rte.Step = (*idempotentTestStep)(nil)
 
 // ============================================================================
-// Property 5: Lock Exclusivity (锁互斥性)
+
 // For any set of concurrent transactions with overlapping lock keys,
 // at most one transaction SHALL hold the lock at any given time.
 // ============================================================================
 
 // TestProperty_LockExclusivity_Integration tests lock exclusivity using real MySQL and Redis.
-// Property 5: Lock Exclusivity
-// *For any* set of concurrent transactions with overlapping lock keys,
+
 // at most one transaction SHALL hold the lock at any given time.
 func TestProperty_LockExclusivity_Integration(t *testing.T) {
 	ti := NewTestInfrastructure(t)
@@ -283,13 +281,13 @@ func TestProperty_LockExclusivity_Integration(t *testing.T) {
 
 		wg.Wait()
 
-		// Property: At most one transaction should hold the lock at any given time
+		
 		if maxConcurrentHolders > 1 {
 			rt.Fatalf("Lock exclusivity violated: max concurrent holders = %d (expected <= 1)",
 				maxConcurrentHolders)
 		}
 
-		// Property: At least one transaction should succeed (the one that got the lock first)
+		
 		if successCount == 0 {
 			rt.Fatalf("Expected at least one successful transaction, got 0 (failures: %d)", failCount)
 		}
@@ -339,15 +337,13 @@ func (s *lockExclusivityTestStep) SupportsCompensation() bool {
 var _ rte.Step = (*lockExclusivityTestStep)(nil)
 
 // ============================================================================
-// Property 9: Optimistic Lock Correctness (乐观锁正确性)
-// For any concurrent updates to the same transaction, only one update SHALL
-// succeed and the version number SHALL be incremented correctly.
+
+// For any two concurrent updates to the same transaction with the same version,
+// at most one SHALL succeed and the other SHALL fail with a version conflict error.
 // ============================================================================
 
 // TestProperty_OptimisticLockCorrectness_Integration tests optimistic lock correctness using real MySQL.
-// Property 9: Optimistic Lock Correctness
-// *For any* concurrent updates to the same transaction, only one update SHALL
-// succeed and the version number SHALL be incremented correctly.
+// at most one SHALL succeed and the other SHALL fail with a version conflict error.
 func TestProperty_OptimisticLockCorrectness_Integration(t *testing.T) {
 	ti := NewTestInfrastructure(t)
 	defer ti.Close()
@@ -435,13 +431,13 @@ func TestProperty_OptimisticLockCorrectness_Integration(t *testing.T) {
 
 		wg.Wait()
 
-		// Property: Only one update should succeed when all start with the same version
+		
 		if successCount != 1 {
 			rt.Fatalf("Expected exactly 1 successful update, got %d (conflicts: %d)",
 				successCount, versionConflictCount)
 		}
 
-		// Property: Version should be incremented by exactly 1
+		
 		finalTx, err := ti.StoreAdapter.GetTransaction(context.Background(), txID)
 		if err != nil {
 			rt.Fatalf("failed to get final transaction: %v", err)
@@ -452,7 +448,7 @@ func TestProperty_OptimisticLockCorrectness_Integration(t *testing.T) {
 			rt.Fatalf("Version mismatch: expected %d, got %d", expectedVersion, finalTx.Version)
 		}
 
-		// Property: All other updates should have failed with version conflict
+		
 		expectedConflicts := int64(concurrency - 1)
 		if versionConflictCount != expectedConflicts {
 			rt.Fatalf("Expected %d version conflicts, got %d", expectedConflicts, versionConflictCount)
@@ -541,12 +537,12 @@ func TestProperty_IdempotentExecution_Sequential(t *testing.T) {
 			results[i] = result
 		}
 
-		// Property: The actual operation should be executed exactly once
+		
 		if actualExecutions != 1 {
 			rt.Fatalf("Expected exactly 1 execution, got %d", actualExecutions)
 		}
 
-		// Property: All results should be successful with the same output
+		
 		for i, result := range results {
 			if result == nil {
 				rt.Fatalf("Result %d is nil", i)

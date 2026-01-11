@@ -135,7 +135,7 @@ func TestStoreChecker_ExpiredRecord(t *testing.T) {
 // Property-Based Tests
 // ============================================================================
 
-// Property 4: Idempotency Guarantee
+
 // For any step with idempotency support, executing the same step multiple times
 // with the same idempotency key SHALL produce the same result.
 func TestProperty_IdempotencyGuarantee(t *testing.T) {
@@ -169,7 +169,7 @@ func TestProperty_IdempotencyGuarantee(t *testing.T) {
 			t.Fatalf("mark failed: %v", err)
 		}
 
-		// Property: Multiple checks with the same key should return the same result
+		
 		numChecks := rapid.IntRange(2, 10).Draw(t, "numChecks")
 		for i := 0; i < numChecks; i++ {
 			exists, result, err := checker.Check(ctx, key)
@@ -186,7 +186,7 @@ func TestProperty_IdempotencyGuarantee(t *testing.T) {
 	})
 }
 
-// Property: Idempotency keys are unique per transaction and step combination
+
 // Different keys should have independent idempotency records
 func TestProperty_IdempotencyKeyUniqueness(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
@@ -217,7 +217,7 @@ func TestProperty_IdempotencyKeyUniqueness(t *testing.T) {
 			t.Fatalf("mark key2 failed: %v", err)
 		}
 
-		// Property: Each key should return its own result
+		
 		exists1, gotResult1, err := checker.Check(ctx, key1)
 		if err != nil {
 			t.Fatalf("check key1 failed: %v", err)
@@ -242,7 +242,7 @@ func TestProperty_IdempotencyKeyUniqueness(t *testing.T) {
 	})
 }
 
-// Property: Mark is idempotent - marking the same key multiple times
+
 // should preserve the first result (or update it, depending on implementation)
 // This tests that the system handles duplicate marks gracefully
 func TestProperty_MarkIdempotence(t *testing.T) {
@@ -277,7 +277,7 @@ func TestProperty_MarkIdempotence(t *testing.T) {
 			t.Fatal("key should exist after marking")
 		}
 
-		// Property: Result should be one of the marked values
+		
 		isResult1 := string(result) == string(result1)
 		isResult2 := string(result) == string(result2)
 		if !isResult1 && !isResult2 {
@@ -286,7 +286,7 @@ func TestProperty_MarkIdempotence(t *testing.T) {
 	})
 }
 
-// Property: Check-then-Mark pattern guarantees idempotency
+
 // This simulates the actual usage pattern in the coordinator
 func TestProperty_CheckThenMarkPattern(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
@@ -334,7 +334,7 @@ func TestProperty_CheckThenMarkPattern(t *testing.T) {
 			}
 		}
 
-		// Property: Step should only be executed once
+		
 		if executionCount != 1 {
 			t.Fatalf("step should be executed exactly once, got %d executions", executionCount)
 		}

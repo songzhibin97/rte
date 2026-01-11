@@ -904,7 +904,7 @@ func TestTransferScenario_SavingToForex_Success(t *testing.T) {
 		t.Errorf("expected status COMPLETED, got %s", result.Status)
 	}
 
-	// Verify balance conservation (Property 1)
+	// Verify balance conservation 
 	finalTotal := accountStore.GetTotalBalance()
 	if finalTotal != initialTotal {
 		t.Errorf("balance conservation violated: initial=%f, final=%f", initialTotal, finalTotal)
@@ -981,7 +981,7 @@ func TestTransferScenario_SavingToForex_ExternalFailure(t *testing.T) {
 		t.Errorf("expected status FAILED or COMPENSATED, got %s", result.Status)
 	}
 
-	// Verify balance conservation after compensation (Property 1)
+	// Verify balance conservation after compensation 
 	finalTotal := accountStore.GetTotalBalance()
 	if finalTotal != initialTotal {
 		t.Errorf("balance conservation violated after compensation: initial=%f, final=%f", initialTotal, finalTotal)
@@ -1064,7 +1064,7 @@ func TestTransferScenario_SavingToForex_UncertainTimeout(t *testing.T) {
 // ============================================================================
 
 // TestProperty_BalanceConservation verifies that total balance is conserved
-// Property 1: For any transfer, sum of balances before == sum after
+
 func TestProperty_BalanceConservation(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		store := newMockStore()
@@ -1121,7 +1121,7 @@ func TestProperty_BalanceConservation(t *testing.T) {
 
 		engine.Execute(context.Background(), tx)
 
-		// Property: Total balance must be conserved (using approximate comparison for floating point)
+		
 		finalTotal := accountStore.GetTotalBalance()
 		if !floatEquals(finalTotal, initialTotal, 0.0001) {
 			t.Fatalf("Balance conservation violated: initial=%f, final=%f", initialTotal, finalTotal)
@@ -1139,7 +1139,7 @@ func floatEquals(a, b, tolerance float64) bool {
 }
 
 // TestProperty_IdempotentExecution verifies idempotency
-// Property 3: Executing same operation twice produces same result
+
 func TestProperty_IdempotentExecution(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		store := newMockStore()
@@ -1213,12 +1213,12 @@ func TestProperty_IdempotentExecution(t *testing.T) {
 		result2, _ := engine.Execute(context.Background(), tx2)
 		balance2 := accountStore.GetTotalBalance()
 
-		// Property: Results should be equivalent
+		
 		if result1.Status != result2.Status {
 			t.Fatalf("Idempotency violated: first=%s, second=%s", result1.Status, result2.Status)
 		}
 
-		// Property: Balance should not change on second execution
+		
 		if balance1 != balance2 {
 			t.Fatalf("Idempotency violated: balance changed from %f to %f", balance1, balance2)
 		}
@@ -1226,7 +1226,7 @@ func TestProperty_IdempotentExecution(t *testing.T) {
 }
 
 // TestProperty_LockExclusivity verifies lock mutual exclusion
-// Property 5: At most one transaction holds the lock at any time
+
 func TestProperty_LockExclusivity(t *testing.T) {
 	store := newMockStore()
 	breaker := newMockBreaker()
@@ -1289,7 +1289,7 @@ func TestProperty_LockExclusivity(t *testing.T) {
 
 	wg.Wait()
 
-	// Property: At most one lock holder at any time
+	
 	maxConcurrent := trackableLocker.GetMaxConcurrent()
 	if maxConcurrent > 1 {
 		t.Errorf("Lock exclusivity violated: max concurrent holders = %d", maxConcurrent)
@@ -1317,7 +1317,7 @@ func TestProperty_LockExclusivity(t *testing.T) {
 }
 
 // TestProperty_RetryBounded verifies retry count is bounded
-// Property 6: Retry attempts <= maxRetries + 1
+
 func TestProperty_RetryBounded(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		store := newMockStore()
@@ -1370,7 +1370,7 @@ func TestProperty_RetryBounded(t *testing.T) {
 
 		engine.Execute(context.Background(), tx)
 
-		// Property: Deposit calls should not exceed maxRetries + 1
+		
 		// (debit succeeds, external_deposit fails and retries)
 		if externalService.depositCalls > maxRetries+1 {
 			t.Fatalf("Retry bound violated: calls=%d, maxRetries=%d", externalService.depositCalls, maxRetries)
@@ -1379,7 +1379,7 @@ func TestProperty_RetryBounded(t *testing.T) {
 }
 
 // TestProperty_CompensationCompleteness_Transfer verifies that all executed steps are compensated
-// Property 4: For any failed transfer, all successfully executed steps SHALL be compensated
+
 func TestProperty_CompensationCompleteness_Transfer(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		store := newMockStore()
@@ -1481,18 +1481,18 @@ func TestProperty_CompensationCompleteness_Transfer(t *testing.T) {
 
 		result, _ := engine.Execute(context.Background(), tx)
 
-		// Property: Transaction should be compensated or failed
+		
 		if result.Status != TxStatusCompensated && result.Status != TxStatusFailed {
 			t.Fatalf("expected COMPENSATED or FAILED status, got %s", result.Status)
 		}
 
-		// Property: Balance conservation must hold after compensation
+		
 		finalTotal := accountStore.GetTotalBalance()
 		if !floatEquals(finalTotal, initialTotal, 0.0001) {
 			t.Fatalf("Balance conservation violated after compensation: initial=%f, final=%f", initialTotal, finalTotal)
 		}
 
-		// Property: Account balances should be restored
+		
 		fromAcc, _ := accountStore.GetAccount(1)
 		toAcc, _ := accountStore.GetAccount(2)
 
@@ -1503,7 +1503,7 @@ func TestProperty_CompensationCompleteness_Transfer(t *testing.T) {
 			t.Fatalf("To account balance not restored: expected=%f, got=%f", initialToBalance, toAcc.Balance)
 		}
 
-		// Property: If transaction was compensated, debit step should have been compensated
+		
 		if result.Status == TxStatusCompensated {
 			compensationMu.Lock()
 			hasDebitCompensation := false
@@ -1872,7 +1872,7 @@ func TestTransferScenario_ForexToSaving_Success(t *testing.T) {
 		t.Errorf("expected status COMPLETED, got %s", result.Status)
 	}
 
-	// Verify balance conservation (Property 1)
+	// Verify balance conservation 
 	finalTotal := accountStore.GetTotalBalance()
 	if !floatEquals(finalTotal, initialTotal, 0.0001) {
 		t.Errorf("balance conservation violated: initial=%f, final=%f", initialTotal, finalTotal)
@@ -2330,7 +2330,7 @@ func TestTransferScenario_CrossPlatform_PlatformAToPlatformB_Success(t *testing.
 		t.Errorf("expected status COMPLETED, got %s", result.Status)
 	}
 
-	// Verify balance conservation (Property 1 - funds not lost or duplicated)
+	// Verify balance conservation (- funds not lost or duplicated)
 	finalTotal := accountStore.GetTotalBalance()
 	if !floatEquals(finalTotal, initialTotal, 0.0001) {
 		t.Errorf("balance conservation violated: initial=%f, final=%f", initialTotal, finalTotal)
@@ -3362,11 +3362,11 @@ func TestRecovery_MaxRetriesExceededNotRetryable(t *testing.T) {
 
 // ============================================================================
 // Recovery Consistency Property-Based Test
-// Property 7: Recovery Consistency
+
 // ============================================================================
 
 // TestProperty_RecoveryConsistency verifies that recovered transactions end in valid final states
-// Property 7: For any stuck transaction recovered by the recovery worker,
+
 // the final state SHALL be either COMPLETED (all steps succeeded) or COMPENSATED (all compensatable steps reversed).
 func TestProperty_RecoveryConsistency(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
@@ -3464,7 +3464,7 @@ func TestProperty_RecoveryConsistency(t *testing.T) {
 
 		result, _ := engine.Execute(context.Background(), tx)
 
-		// Property 7: Final state must be COMPLETED or COMPENSATED (or FAILED if no compensation needed)
+		
 		validFinalStates := map[TxStatus]bool{
 			TxStatusCompleted:   true,
 			TxStatusCompensated: true,
@@ -3475,7 +3475,7 @@ func TestProperty_RecoveryConsistency(t *testing.T) {
 			t.Fatalf("Invalid final state: %s (expected COMPLETED, COMPENSATED, or FAILED)", result.Status)
 		}
 
-		// Property: Balance conservation must hold regardless of final state
+		
 		finalTotal := accountStore.GetTotalBalance()
 		if !floatEquals(finalTotal, initialTotal, 0.0001) {
 			t.Fatalf("Balance conservation violated: initial=%f, final=%f, status=%s",
@@ -3534,7 +3534,7 @@ func (s *failingFinalizeStep) Execute(ctx context.Context, txCtx *TxContext) err
 }
 
 // TestProperty_RecoveryConsistency_WithRandomStuckState tests recovery from random stuck states
-// Property 7: Recovery Consistency - validates that recovery always results in consistent state
+
 func TestProperty_RecoveryConsistency_WithRandomStuckState(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		store := NewRecoveryMockStore()
@@ -3577,7 +3577,7 @@ func TestProperty_RecoveryConsistency_WithRandomStuckState(t *testing.T) {
 			return
 		}
 
-		// Property: Final state must be valid
+		
 		finalStatus := store.GetTransactionStatus(stuckTx.TxID)
 		validFinalStates := map[TxStatus]bool{
 			TxStatusCompleted:   true,
@@ -3589,7 +3589,7 @@ func TestProperty_RecoveryConsistency_WithRandomStuckState(t *testing.T) {
 			t.Fatalf("Invalid final state after recovery: %s", finalStatus)
 		}
 
-		// Property: If recovery succeeded, status should match expected outcome
+		
 		if recoverySucceeds && finalStatus != TxStatusCompleted {
 			t.Fatalf("Expected COMPLETED after successful recovery, got %s", finalStatus)
 		}
@@ -3600,7 +3600,7 @@ func TestProperty_RecoveryConsistency_WithRandomStuckState(t *testing.T) {
 }
 
 // TestProperty_RecoveryConsistency_BalanceInvariant tests that balance is always conserved after recovery
-// Property 7: Recovery Consistency - balance conservation invariant
+
 func TestProperty_RecoveryConsistency_BalanceInvariant(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Setup
@@ -3665,7 +3665,7 @@ func TestProperty_RecoveryConsistency_BalanceInvariant(t *testing.T) {
 		// Execute transaction
 		engine.Execute(context.Background(), tx)
 
-		// Property: Balance must always be conserved
+		
 		finalTotal := accountStore.GetTotalBalance()
 		if !floatEquals(finalTotal, initialTotal, 0.0001) {
 			t.Fatalf("Balance conservation violated: initial=%f, final=%f", initialTotal, finalTotal)
@@ -4191,11 +4191,11 @@ func (h *contentionLockHandle) Keys() []string {
 }
 
 // ============================================================================
-// Property-Based Test: Confluence (Property 8)
+// Property-Based Test: Confluence 
 // ============================================================================
 
 // TestProperty_Confluence verifies that final state is deterministic regardless of execution order
-// Property 8: Confluence - For all concurrent operations on the same account,
+
 // the final balance SHALL be deterministic regardless of execution order
 func TestProperty_Confluence(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
@@ -4224,7 +4224,7 @@ func TestProperty_Confluence(t *testing.T) {
 		}
 		finalState2 := runTransfersSequentially(t, initialFromBalance, initialToBalance, reversedAmounts)
 
-		// Property: Final balances should be the same regardless of order
+		
 		// (assuming all transfers succeed, which they should with sufficient balance)
 		// Use floating point comparison with tolerance
 		if !floatEquals(finalState1.fromBalance, finalState2.fromBalance, 0.0001) {
@@ -4236,7 +4236,7 @@ func TestProperty_Confluence(t *testing.T) {
 				finalState1.toBalance, finalState2.toBalance)
 		}
 
-		// Property: Total balance should be conserved
+		
 		initialTotal := initialFromBalance + initialToBalance
 		finalTotal1 := finalState1.fromBalance + finalState1.toBalance
 		finalTotal2 := finalState2.fromBalance + finalState2.toBalance
@@ -4323,7 +4323,7 @@ func runTransfersSequentially(t *rapid.T, fromBalance, toBalance float64, amount
 }
 
 // TestProperty_Confluence_Concurrent verifies confluence under actual concurrent execution
-// Property 8: Confluence - concurrent operations produce deterministic final state
+
 func TestProperty_Confluence_Concurrent(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Generate random parameters
@@ -4343,7 +4343,7 @@ func TestProperty_Confluence_Concurrent(t *testing.T) {
 		// Run concurrent transfers
 		finalState := runTransfersConcurrently(initialFromBalance, initialToBalance, transferAmounts)
 
-		// Property: Balance conservation must hold
+		
 		initialTotal := initialFromBalance + initialToBalance
 		finalTotal := finalState.fromBalance + finalState.toBalance
 
@@ -4351,7 +4351,7 @@ func TestProperty_Confluence_Concurrent(t *testing.T) {
 			t.Fatalf("Balance conservation violated: initial=%f, final=%f", initialTotal, finalTotal)
 		}
 
-		// Property: Final balance should reflect successful transfers
+		
 		// Each successful transfer moves amount from account 1 to account 2
 		// We can't predict exact success count due to concurrency, but we can verify consistency
 		transferredAmount := finalState.toBalance - initialToBalance
@@ -4361,7 +4361,7 @@ func TestProperty_Confluence_Concurrent(t *testing.T) {
 			t.Fatalf("Transfer consistency violated: credited=%f, debited=%f", transferredAmount, debitedAmount)
 		}
 
-		// Property: Transferred amount should be sum of some subset of transfer amounts
+		
 		// (the successful ones)
 		if transferredAmount < 0 {
 			t.Fatalf("Negative transfer amount: %f", transferredAmount)
@@ -4448,7 +4448,7 @@ func runTransfersConcurrently(fromBalance, toBalance float64, amounts []float64)
 }
 
 // TestProperty_Confluence_Bidirectional verifies confluence for bidirectional transfers
-// Property 8: Confluence - bidirectional concurrent transfers produce consistent state
+
 func TestProperty_Confluence_Bidirectional(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Generate random parameters
@@ -4472,7 +4472,7 @@ func TestProperty_Confluence_Bidirectional(t *testing.T) {
 		// Run bidirectional transfers
 		finalState := runBidirectionalTransfers(initialBalance1, initialBalance2, amounts1to2, amounts2to1)
 
-		// Property: Balance conservation must hold
+		
 		initialTotal := initialBalance1 + initialBalance2
 		finalTotal := finalState.balance1 + finalState.balance2
 
@@ -4480,7 +4480,7 @@ func TestProperty_Confluence_Bidirectional(t *testing.T) {
 			t.Fatalf("Balance conservation violated: initial=%f, final=%f", initialTotal, finalTotal)
 		}
 
-		// Property: Net transfer should be consistent
+		
 		// Net change in balance1 = (transfers received from 2) - (transfers sent to 2)
 		netChange1 := finalState.balance1 - initialBalance1
 		netChange2 := finalState.balance2 - initialBalance2

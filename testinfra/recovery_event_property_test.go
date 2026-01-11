@@ -21,14 +21,13 @@ import (
 )
 
 // ============================================================================
-// Property 8: Recovery Correctness (恢复正确性)
+
 // For any stuck transaction (LOCKED or EXECUTING status), recovery SHALL resume
 // execution from the current step and complete or compensate correctly.
 // ============================================================================
 
 // TestProperty_RecoveryCorrectness_Integration tests recovery correctness using real MySQL and Redis.
-// Property 8: Recovery Correctness
-// *For any* stuck transaction (LOCKED or EXECUTING status), recovery SHALL resume
+
 // execution from the current step and complete or compensate correctly.
 func TestProperty_RecoveryCorrectness_Integration(t *testing.T) {
 	ti := NewTestInfrastructure(t)
@@ -130,17 +129,17 @@ func TestProperty_RecoveryCorrectness_Integration(t *testing.T) {
 		// Resume the stuck transaction
 		result, _ := coord.Resume(context.Background(), storeTx)
 
-		// Property: Transaction should reach a terminal state
+		
 		if !rte.IsTxTerminal(result.Status) && result.Status != rte.TxStatusFailed {
 			rt.Fatalf("expected terminal or FAILED status after recovery, got %s", result.Status)
 		}
 
-		// Property: If shouldSucceed, transaction should be COMPLETED
+		
 		if shouldSucceed && result.Status != rte.TxStatusCompleted {
 			rt.Fatalf("expected COMPLETED status for successful recovery, got %s", result.Status)
 		}
 
-		// Property: If !shouldSucceed, transaction should be COMPENSATED or FAILED
+		
 		if !shouldSucceed {
 			if result.Status != rte.TxStatusCompensated && result.Status != rte.TxStatusFailed {
 				rt.Fatalf("expected COMPENSATED or FAILED status for failed recovery, got %s", result.Status)
@@ -191,7 +190,7 @@ func (s *recoveryTestStep) SupportsCompensation() bool {
 var _ rte.Step = (*recoveryTestStep)(nil)
 
 // ============================================================================
-// Property 8 (Alternative): Recovery Worker Integration
+
 // Tests that the recovery worker correctly identifies and processes stuck transactions.
 // ============================================================================
 
@@ -377,7 +376,7 @@ func TestProperty_RecoveryWorkerIntegration(t *testing.T) {
 		// Give some time for processing
 		time.Sleep(100 * time.Millisecond)
 
-		// Property: All stuck transactions should be processed
+		
 		for _, txID := range txIDs {
 			finalTx, err := ti.StoreAdapter.GetTransaction(context.Background(), txID)
 			if err != nil {
@@ -430,14 +429,13 @@ func (a *coordinatorAdapter) Resume(ctx context.Context, txID string) error {
 var _ rte.Step = (*simpleRecoveryStep)(nil)
 
 // ============================================================================
-// Property 10: Event Publication Completeness (事件发布完整性)
+
 // For any transaction lifecycle, the appropriate events SHALL be published
 // at each state transition.
 // ============================================================================
 
 // TestProperty_EventPublicationCompleteness_Integration tests event publication completeness.
-// Property 10: Event Publication Completeness
-// *For any* transaction lifecycle, the appropriate events SHALL be published
+
 // at each state transition.
 func TestProperty_EventPublicationCompleteness_Integration(t *testing.T) {
 	ti := NewTestInfrastructure(t)
@@ -509,12 +507,12 @@ func TestProperty_EventPublicationCompleteness_Integration(t *testing.T) {
 		// Execute transaction
 		result, _ := coord.Execute(context.Background(), tx)
 
-		// Property: tx.created event must be published
+		
 		if !collector.HasEventType(event.EventTxCreated) {
 			rt.Fatalf("expected tx.created event to be published")
 		}
 
-		// Property: For successful transactions, tx.completed must be published
+		
 		if failAtStep == -1 {
 			if result.Status != rte.TxStatusCompleted {
 				rt.Fatalf("expected COMPLETED status, got %s", result.Status)
@@ -524,14 +522,14 @@ func TestProperty_EventPublicationCompleteness_Integration(t *testing.T) {
 			}
 		}
 
-		// Property: For failed transactions, tx.failed must be published
+		
 		if failAtStep >= 0 {
 			if !collector.HasEventType(event.EventTxFailed) {
 				rt.Fatalf("expected tx.failed event to be published for failed transaction")
 			}
 		}
 
-		// Property: step.started events must be published for each executed step
+		
 		stepStartedCount := collector.CountEventType(event.EventStepStarted)
 		expectedStepStarted := numSteps
 		if failAtStep >= 0 {
@@ -541,7 +539,7 @@ func TestProperty_EventPublicationCompleteness_Integration(t *testing.T) {
 			rt.Fatalf("expected %d step.started events, got %d", expectedStepStarted, stepStartedCount)
 		}
 
-		// Property: step.completed events must be published for each completed step
+		
 		stepCompletedCount := collector.CountEventType(event.EventStepCompleted)
 		expectedStepCompleted := numSteps
 		if failAtStep >= 0 {
@@ -551,7 +549,7 @@ func TestProperty_EventPublicationCompleteness_Integration(t *testing.T) {
 			rt.Fatalf("expected %d step.completed events, got %d", expectedStepCompleted, stepCompletedCount)
 		}
 
-		// Property: step.failed event must be published for the failed step
+		
 		if failAtStep >= 0 {
 			stepFailedCount := collector.CountEventType(event.EventStepFailed)
 			if stepFailedCount != 1 {
@@ -596,7 +594,7 @@ func (s *eventTestStep) SupportsCompensation() bool {
 var _ rte.Step = (*eventTestStep)(nil)
 
 // ============================================================================
-// Property 10 (Alternative): Compensation Failure Alert
+
 // When compensation fails, the system SHALL publish alert.critical event.
 // ============================================================================
 
@@ -660,17 +658,17 @@ func TestProperty_CompensationFailureAlert_Integration(t *testing.T) {
 		// Execute transaction (should fail at step 2, then fail compensation)
 		result, _ := coord.Execute(context.Background(), tx)
 
-		// Property: Transaction should be in COMPENSATION_FAILED status
+		
 		if result.Status != rte.TxStatusCompensationFailed {
 			rt.Fatalf("expected COMPENSATION_FAILED status, got %s", result.Status)
 		}
 
-		// Property: alert.critical event must be published
+		
 		if !collector.HasEventType(event.EventAlertCritical) {
 			rt.Fatalf("expected alert.critical event to be published for compensation failure")
 		}
 
-		// Property: tx.compensation_failed event must be published
+		
 		if !collector.HasEventType(event.EventTxCompensationFailed) {
 			rt.Fatalf("expected tx.compensation_failed event to be published")
 		}
@@ -718,14 +716,13 @@ var _ rte.Step = (*compensationFailingStep)(nil)
 var _ rte.Step = (*alwaysFailingStepWithComp)(nil)
 
 // ============================================================================
-// Property 11: Confluence (汇合性)
+
 // For any set of concurrent transactions operating on independent resources,
 // the final state SHALL be the same regardless of execution order.
 // ============================================================================
 
 // TestProperty_Confluence_Integration tests confluence using real MySQL and Redis.
-// Property 11: Confluence
-// *For any* set of concurrent transactions operating on independent resources,
+
 // the final state SHALL be the same regardless of execution order.
 func TestProperty_Confluence_Integration(t *testing.T) {
 	ti := NewTestInfrastructure(t)
@@ -780,7 +777,7 @@ func TestProperty_Confluence_Integration(t *testing.T) {
 		shuffledTransfers := shuffleTransfers(rt, transfers)
 		executeTransfersInOrder(rt, ti, accountStore3, shuffledTransfers, "order3")
 
-		// Property: Final total balance should be the same for all orders
+		
 		finalTotal1 := accountStore1.TotalBalance()
 		finalTotal2 := accountStore2.TotalBalance()
 		finalTotal3 := accountStore3.TotalBalance()
@@ -795,7 +792,7 @@ func TestProperty_Confluence_Integration(t *testing.T) {
 			rt.Fatalf("Order 3: balance conservation violated: initial=%d, final=%d", initialTotal, finalTotal3)
 		}
 
-		// Property: Final account balances should be the same for all orders
+		
 		// (since transfers are independent, order shouldn't matter)
 		for i := 0; i < numTransfers; i++ {
 			fromID := fmt.Sprintf("from-acc-%d", i)
@@ -1022,7 +1019,7 @@ var _ rte.Step = (*confluenceDebitStep)(nil)
 var _ rte.Step = (*confluenceCreditStep)(nil)
 
 // ============================================================================
-// Property 11 (Alternative): Concurrent Confluence
+
 // Tests confluence with concurrent execution of independent transfers.
 // ============================================================================
 
@@ -1132,7 +1129,7 @@ func TestProperty_ConcurrentConfluence_Integration(t *testing.T) {
 
 		wg.Wait()
 
-		// Property: All transfers should complete successfully
+		
 		for i, result := range results {
 			if result == nil {
 				rt.Fatalf("transfer %d result is nil", i)
@@ -1142,13 +1139,13 @@ func TestProperty_ConcurrentConfluence_Integration(t *testing.T) {
 			}
 		}
 
-		// Property: Total balance should be conserved
+		
 		finalTotal := accountStore.TotalBalance()
 		if finalTotal != initialTotal {
 			rt.Fatalf("Balance conservation violated: initial=%d, final=%d", initialTotal, finalTotal)
 		}
 
-		// Property: Each transfer should have correctly updated its accounts
+		
 		for i, transfer := range transfers {
 			fromAcc, _ := accountStore.GetAccount(transfer.fromID)
 			toAcc, _ := accountStore.GetAccount(transfer.toID)

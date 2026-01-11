@@ -446,7 +446,7 @@ func TestMySQLStore_GetRetryableTransactions(t *testing.T) {
 }
 
 // ============================================================================
-// Optimistic Lock Tests (Property 3)
+// Optimistic Lock Tests 
 // ============================================================================
 
 func TestMySQLStore_UpdateTransaction_VersionConflict(t *testing.T) {
@@ -482,7 +482,7 @@ func TestMySQLStore_UpdateTransaction_VersionConflict(t *testing.T) {
 // Property-Based Tests
 // ============================================================================
 
-// Property 3: Optimistic Lock Prevents Lost Updates
+
 // For any transaction, if two concurrent updates attempt to modify the same
 // transaction with the same version, only one should succeed and the other
 // should receive a version conflict error.
@@ -599,7 +599,7 @@ func TestProperty_VersionIncrementsOnSuccess(t *testing.T) {
 			t.Fatalf("update should succeed, got error: %v", err)
 		}
 
-		// Property: version should remain the same (caller already incremented it)
+		
 		if tx.Version != initialVersion {
 			t.Fatalf("expected version %d, got %d", initialVersion, tx.Version)
 		}
@@ -672,7 +672,7 @@ func TestMySQLStore_DeleteExpiredIdempotency(t *testing.T) {
 }
 
 // ============================================================================
-// GetPendingTransactions Tests (Requirements 4.2)
+// GetPendingTransactions Tests 
 // ============================================================================
 
 func TestMySQLStore_GetPendingTransactions(t *testing.T) {
@@ -755,7 +755,7 @@ func TestMySQLStore_GetPendingTransactions_QueryError(t *testing.T) {
 }
 
 // ============================================================================
-// CreateTransaction Error Path Tests (Requirements 4.3)
+// CreateTransaction Error Path Tests 
 // ============================================================================
 
 func TestMySQLStore_CreateTransaction_ExecError(t *testing.T) {
@@ -793,7 +793,7 @@ func TestMySQLStore_CreateTransaction_LastInsertIdError(t *testing.T) {
 }
 
 // ============================================================================
-// UpdateTransaction Error Path Tests (Requirements 4.3)
+// UpdateTransaction Error Path Tests 
 // ============================================================================
 
 func TestMySQLStore_UpdateTransaction_ExecError(t *testing.T) {
@@ -857,7 +857,7 @@ func TestMySQLStore_UpdateTransaction_TransactionExistsCheckError(t *testing.T) 
 }
 
 // ============================================================================
-// GetTransaction Error Path Tests (Requirements 4.4)
+// GetTransaction Error Path Tests 
 // ============================================================================
 
 func TestMySQLStore_GetTransaction_QueryError(t *testing.T) {
@@ -954,7 +954,7 @@ func TestMySQLStore_GetTransaction_UnmarshalContextError(t *testing.T) {
 }
 
 // ============================================================================
-// CreateStep Error Path Tests (Requirements 4.5)
+// CreateStep Error Path Tests 
 // ============================================================================
 
 func TestMySQLStore_CreateStep_DuplicateKey(t *testing.T) {
@@ -1011,7 +1011,7 @@ func TestMySQLStore_CreateStep_LastInsertIdError(t *testing.T) {
 }
 
 // ============================================================================
-// isDuplicateKeyError Tests (Requirements 4.5)
+// isDuplicateKeyError Tests 
 // ============================================================================
 
 func TestIsDuplicateKeyError(t *testing.T) {

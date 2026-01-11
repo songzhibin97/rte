@@ -554,7 +554,7 @@ func TestLockHandle_Release_EmptyAcquired(t *testing.T) {
 // Property-Based Tests
 // ============================================================================
 
-// Property 2: Lock Ordering Prevents Deadlock
+
 // For any set of lock keys, the locker SHALL sort them alphabetically before
 // acquisition to prevent deadlocks when multiple processes acquire overlapping
 // sets of locks.
@@ -591,12 +591,12 @@ func TestProperty_LockOrderingPreventsDeadlock(t *testing.T) {
 
 		acquiredKeys := handle.Keys()
 
-		// Property 1: Acquired keys should be sorted alphabetically
+		
 		if !sort.StringsAreSorted(acquiredKeys) {
 			t.Fatalf("acquired keys are not sorted: %v", acquiredKeys)
 		}
 
-		// Property 2: SetNX calls should be made in sorted order
+		
 		expectedSorted := make([]string, len(uniqueKeys))
 		copy(expectedSorted, uniqueKeys)
 		sort.Strings(expectedSorted)
@@ -612,7 +612,7 @@ func TestProperty_LockOrderingPreventsDeadlock(t *testing.T) {
 			}
 		}
 
-		// Property 3: All unique keys should be acquired
+		
 		if len(acquiredKeys) != len(expectedSorted) {
 			t.Fatalf("expected %d acquired keys, got %d", len(expectedSorted), len(acquiredKeys))
 		}
@@ -645,14 +645,14 @@ func TestProperty_KeysAlwaysSorted(t *testing.T) {
 
 		acquiredKeys := handle.Keys()
 
-		// Property: Keys() should always return sorted keys
+		
 		if !sort.StringsAreSorted(acquiredKeys) {
 			t.Fatalf("Keys() returned unsorted keys: %v", acquiredKeys)
 		}
 	})
 }
 
-// Property: Lock acquisition order is deterministic regardless of input order
+
 func TestProperty_DeterministicAcquisitionOrder(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
 		// Generate a set of keys
@@ -686,7 +686,7 @@ func TestProperty_DeterministicAcquisitionOrder(t *testing.T) {
 			t.Fatalf("Acquire failed: err1=%v, err2=%v", err1, err2)
 		}
 
-		// Property: Both should acquire locks in the same order
+		
 		acquiredKeys1 := handle1.Keys()
 		acquiredKeys2 := handle2.Keys()
 
@@ -700,7 +700,7 @@ func TestProperty_DeterministicAcquisitionOrder(t *testing.T) {
 			}
 		}
 
-		// Property: SetNX calls should be in the same order
+		
 		if len(mock1.setNXCalls) != len(mock2.setNXCalls) {
 			t.Fatalf("different number of SetNX calls: %d vs %d", len(mock1.setNXCalls), len(mock2.setNXCalls))
 		}

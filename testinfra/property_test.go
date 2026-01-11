@@ -21,15 +21,14 @@ import (
 var txIDCounter int64
 
 // ============================================================================
-// Property 1: Balance Conservation (余额守恒)
+
 // For any set of accounts and for any sequence of transfer transactions
 // (successful, failed, or compensated), the total balance across all accounts
 // SHALL remain constant.
 // ============================================================================
 
 // TestProperty_BalanceConservation_Integration tests balance conservation using real MySQL and Redis.
-// Property 1: Balance Conservation
-// *For any* set of accounts and *for any* sequence of transfer transactions,
+
 // the total balance across all accounts SHALL remain constant.
 func TestProperty_BalanceConservation_Integration(t *testing.T) {
 	ti := NewTestInfrastructure(t)
@@ -126,7 +125,7 @@ func TestProperty_BalanceConservation_Integration(t *testing.T) {
 		// Execute transaction
 		_, _ = coord.Execute(context.Background(), tx)
 
-		// Property: Total balance must be conserved regardless of outcome
+		
 		finalTotal := accountStore.TotalBalance()
 		if finalTotal != initialTotal {
 			rt.Fatalf("Balance conservation violated: initial=%d, final=%d, scenario=%d",
@@ -225,15 +224,14 @@ func (s *balanceConservationCreditStep) SupportsCompensation() bool {
 }
 
 // ============================================================================
-// Property 2: Compensation Completeness (补偿完整性)
+
 // For any transaction that fails at step N, for all completed steps 0 to N-1
 // that support compensation, the compensation operations SHALL be executed
 // in reverse order exactly once.
 // ============================================================================
 
 // TestProperty_CompensationCompleteness_Integration tests compensation completeness using real MySQL and Redis.
-// Property 2: Compensation Completeness
-// *For any* transaction that fails at step N, *for all* completed steps 0 to N-1
+
 // that support compensation, the compensation operations SHALL be executed in reverse order exactly once.
 func TestProperty_CompensationCompleteness_Integration(t *testing.T) {
 	ti := NewTestInfrastructure(t)
@@ -306,7 +304,7 @@ func TestProperty_CompensationCompleteness_Integration(t *testing.T) {
 			rt.Fatalf("failed to execute transaction: %v", execErr)
 		}
 
-		// Property: Transaction should be compensated
+		
 		if result.Status != rte.TxStatusCompensated {
 			// Debug: get transaction details
 			storedTx, _ := ti.StoreAdapter.GetTransaction(context.Background(), tx.TxID())
@@ -314,7 +312,7 @@ func TestProperty_CompensationCompleteness_Integration(t *testing.T) {
 			rt.Fatalf("expected COMPENSATED status, got %s (error: %v)", result.Status, result.Error)
 		}
 
-		// Property: All completed steps should be compensated
+		
 		// Steps 0 to failAtStep-1 should be compensated (failAtStep failed, so it wasn't completed)
 		expectedCompensations := failAtStep // Steps 0 to failAtStep-1
 
@@ -329,7 +327,7 @@ func TestProperty_CompensationCompleteness_Integration(t *testing.T) {
 			rt.Fatalf("expected %d compensations, got %d: %v", expectedCompensations, len(compensationOrder), compensationOrder)
 		}
 
-		// Property: Compensation should be in reverse order
+		
 		// The first compensation should be for the step just before the failed step
 		for i := 0; i < len(compensationOrder); i++ {
 			expectedStepIndex := failAtStep - 1 - i
@@ -339,7 +337,7 @@ func TestProperty_CompensationCompleteness_Integration(t *testing.T) {
 			}
 		}
 
-		// Property: Verify step records in store
+		
 		steps, err := ti.StoreAdapter.GetSteps(context.Background(), tx.TxID())
 		if err != nil {
 			rt.Fatalf("failed to get steps: %v", err)
@@ -394,14 +392,13 @@ func (s *compensationTestStep) SupportsCompensation() bool {
 }
 
 // ============================================================================
-// Property 3: State Transition Validity (状态转换有效性)
+
 // For any transaction and for any sequence of operations, the transaction status
 // SHALL only transition through valid paths as defined by the state machine.
 // ============================================================================
 
 // TestProperty_StateTransitionValidity_Integration tests state transition validity using real MySQL and Redis.
-// Property 3: State Transition Validity
-// *For any* transaction and *for any* sequence of operations, the transaction status
+
 // SHALL only transition through valid paths as defined by the state machine.
 func TestProperty_StateTransitionValidity_Integration(t *testing.T) {
 	ti := NewTestInfrastructure(t)
@@ -486,37 +483,37 @@ func TestProperty_StateTransitionValidity_Integration(t *testing.T) {
 		stateTransitions = append(stateTransitions, storedTx.Status)
 		transitionMu.Unlock()
 
-		// Property: Final state must be terminal or FAILED
+		
 		isValidFinalState := rte.IsTxTerminal(storedTx.Status) || storedTx.Status == rte.TxStatusFailed
 		if !isValidFinalState {
 			rt.Fatalf("final state %s is not a valid final state", storedTx.Status)
 		}
 
-		// Property: Result status must match stored status
+		
 		if result.Status != storedTx.Status {
 			rt.Fatalf("result status %s does not match stored status %s", result.Status, storedTx.Status)
 		}
 
-		// Property: If no failure, status should be COMPLETED
+		
 		if failAtStep == -1 && storedTx.Status != rte.TxStatusCompleted {
 			rt.Fatalf("expected COMPLETED for successful transaction, got %s", storedTx.Status)
 		}
 
-		// Property: If failure with compensation support and at least one step completed, status should be COMPENSATED
+		
 		if failAtStep > 0 && supportsCompensation {
 			if storedTx.Status != rte.TxStatusCompensated {
 				rt.Fatalf("expected COMPENSATED for failed transaction with compensation, got %s", storedTx.Status)
 			}
 		}
 
-		// Property: If failure at first step or without compensation support, status should be FAILED
+		
 		if failAtStep == 0 || (failAtStep >= 0 && !supportsCompensation) {
 			if storedTx.Status != rte.TxStatusFailed {
 				rt.Fatalf("expected FAILED for failed transaction at first step or without compensation, got %s", storedTx.Status)
 			}
 		}
 
-		// Property: Terminal states should not allow further transitions
+		
 		if rte.IsTxTerminal(storedTx.Status) {
 			// Verify no valid transitions from terminal state
 			for _, targetStatus := range []rte.TxStatus{

@@ -443,14 +443,6 @@ func TestValidate_InvalidIdempotencyTTL(t *testing.T) {
 	}
 }
 
-// ============================================================================
-// Property Test for Options Application
-// Property 2: Options Application Correctness
-// *For any* set of configuration options, applying them to a default config
-// should produce a config where each option's value is correctly set,
-// and unset options retain their default values.
-// ============================================================================
-
 func TestProperty_OptionsApplicationCorrectness(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		// Generate random option values
@@ -489,7 +481,7 @@ func TestProperty_OptionsApplicationCorrectness(t *testing.T) {
 		cfg := ApplyOptions(opts...)
 		defaultCfg := DefaultConfig()
 
-		// Property: Applied options should have the specified values
+		
 		if applyLockTTL {
 			expected := time.Duration(lockTTL) * time.Second
 			if cfg.LockTTL != expected {
@@ -541,17 +533,10 @@ func TestProperty_OptionsApplicationCorrectness(t *testing.T) {
 			}
 		}
 
-		// Property: Non-applied options should retain default values
+		
 		// (Already checked above in the else branches)
 	})
 }
-
-// ============================================================================
-// Property Test for Config Validation
-// Property 5: Config Validation Completeness
-// *For any* Config with invalid field values, Validate should return an error.
-// For any Config with all valid values, Validate should return nil.
-// ============================================================================
 
 func TestProperty_ConfigValidationCompleteness(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
@@ -590,12 +575,12 @@ func TestProperty_ConfigValidationCompleteness(t *testing.T) {
 			IdempotencyTTL:      time.Duration(idempotencyTTL) * time.Second,
 		}
 
-		// Property: Valid config should pass validation
+		
 		if err := cfg.Validate(); err != nil {
 			rt.Fatalf("Valid config should pass validation, got error: %v", err)
 		}
 
-		// Property: Invalid configs should fail validation
+		
 		// Test each invalid case
 
 		// Invalid LockTTL
