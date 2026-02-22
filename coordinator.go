@@ -239,6 +239,14 @@ func (c *Coordinator) startLockExtender(ctx context.Context, handle lock.LockHan
 	done := make(chan struct{})
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.publishEvent(ctx, event.NewEvent(event.EventAlertCritical).
+					WithTxID(tx.TxID).
+					WithData("message", "lock extender panic").
+					WithData("panic", r))
+			}
+		}()
 		for {
 			select {
 			case <-ticker.C:
@@ -428,6 +436,11 @@ func (c *Coordinator) executeWithTimeout(ctx context.Context, step Step, txCtx *
 	// Execute step
 	done := make(chan error, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("step execution panic: %v", r)
+			}
+		}()
 		done <- step.Execute(timeoutCtx, txCtx)
 	}()
 
@@ -681,6 +694,11 @@ func (c *Coordinator) executeCompensationWithTimeout(ctx context.Context, step S
 	// Execute compensation
 	done := make(chan error, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("compensation panic: %v", r)
+			}
+		}()
 		done <- step.Compensate(timeoutCtx, txCtx)
 	}()
 
