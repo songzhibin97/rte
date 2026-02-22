@@ -126,7 +126,7 @@ func (s *RobustExternalStep) Compensate(ctx context.Context, txCtx *rte.TxContex
 	if !completed {
 		// 操作未完成，无需补偿
 		if logID > 0 {
-			s.repo.UpdateLogStatus(logID, "FAILED")
+			s.repo.UpdateLogStatus(logID, domain.TxLogStatusFailed)
 		}
 		return nil
 	}
@@ -141,7 +141,7 @@ func (s *RobustExternalStep) Compensate(ctx context.Context, txCtx *rte.TxContex
 	}
 
 	if logID > 0 {
-		s.repo.UpdateLogStatus(logID, "COMPENSATED")
+		s.repo.UpdateLogStatus(logID, domain.TxLogStatusFailed) // 使用FAILED表示已补偿回滚
 	}
 
 	return nil

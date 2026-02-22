@@ -72,7 +72,7 @@ func (s *DebitStep) Compensate(ctx context.Context, txCtx *rte.TxContext) error 
 
 	// 更新日志状态
 	if logID > 0 {
-		s.repo.UpdateLogStatus(logID, "FAILED")
+		s.repo.UpdateLogStatus(logID, domain.TxLogStatusFailed)
 	}
 
 	return nil

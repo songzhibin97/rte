@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"rte"
 	"sync"
 	"time"
 
@@ -276,7 +277,7 @@ func (w *Worker) recoverTransaction(ctx context.Context, tx *StoreTx) {
 
 	// Check if transaction still needs recovery
 	// Only recover LOCKED or EXECUTING transactions
-	if currentTx.Status != "LOCKED" && currentTx.Status != "EXECUTING" {
+	if rte.TxStatus(currentTx.Status) != rte.TxStatusLocked && rte.TxStatus(currentTx.Status) != rte.TxStatusExecuting {
 		w.logger.Printf("tx %s no longer needs recovery (status=%s)", tx.TxID, currentTx.Status)
 		return
 	}
@@ -319,7 +320,7 @@ func (w *Worker) retryTransaction(ctx context.Context, tx *StoreTx) {
 	}
 
 	// Check if transaction still needs retry
-	if currentTx.Status != "FAILED" {
+	if rte.TxStatus(currentTx.Status) != rte.TxStatusFailed {
 		return
 	}
 

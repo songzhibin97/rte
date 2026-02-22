@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/url"
+	"rte"
 	"time"
 )
 
@@ -160,8 +161,8 @@ func NewTransactionDetailPageData(tx TransactionDetail, steps []StepDetail) Tran
 
 // canForceCompleteStatus 检查状态是否可以强制完成
 func canForceCompleteStatus(status string) bool {
-	switch status {
-	case "LOCKED", "EXECUTING", "CONFIRMING":
+	switch rte.TxStatus(status) {
+	case rte.TxStatusLocked, rte.TxStatusExecuting, rte.TxStatusConfirming:
 		return true
 	default:
 		return false
@@ -170,8 +171,8 @@ func canForceCompleteStatus(status string) bool {
 
 // canForceCancelStatus 检查状态是否可以强制取消
 func canForceCancelStatus(status string) bool {
-	switch status {
-	case "CREATED", "LOCKED", "EXECUTING", "FAILED":
+	switch rte.TxStatus(status) {
+	case rte.TxStatusCreated, rte.TxStatusLocked, rte.TxStatusExecuting, rte.TxStatusFailed:
 		return true
 	default:
 		return false
@@ -180,7 +181,7 @@ func canForceCancelStatus(status string) bool {
 
 // canRetryStatus 检查状态是否可以重试
 func canRetryStatus(status string) bool {
-	return status == "FAILED"
+	return rte.TxStatus(status) == rte.TxStatusFailed
 }
 
 // RecoveryPageData 恢复监控页数据

@@ -6,6 +6,13 @@ import (
 	"time"
 )
 
+// TransactionLog status constants
+const (
+	TxLogStatusPending  = "PENDING"
+	TxLogStatusComplete = "COMPLETE"
+	TxLogStatusFailed   = "FAILED"
+)
+
 // Account 账户模型
 type Account struct {
 	ID        int64
@@ -109,7 +116,7 @@ func (r *MemoryAccountRepository) CreateLog(ticket string, accountID int64, txTy
 		AccountID:       accountID,
 		TransactionType: txType,
 		Amount:          amount,
-		Status:          "PENDING",
+		Status:          TxLogStatusPending,
 		CreatedAt:       time.Now(),
 	}
 	r.logs[log.ID] = log

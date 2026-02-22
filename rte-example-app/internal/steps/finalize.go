@@ -29,12 +29,12 @@ func (s *FinalizeStep) Execute(ctx context.Context, txCtx *rte.TxContext) error 
 
 	// 更新扣款日志
 	if debitLogID, err := rte.GetOutputAs[int64](txCtx, "debit_log_id"); err == nil && debitLogID > 0 {
-		s.repo.UpdateLogStatus(debitLogID, "COMPLETE")
+		s.repo.UpdateLogStatus(debitLogID, domain.TxLogStatusComplete)
 	}
 
 	// 更新入账日志
 	if creditLogID, err := rte.GetOutputAs[int64](txCtx, "credit_log_id"); err == nil && creditLogID > 0 {
-		s.repo.UpdateLogStatus(creditLogID, "COMPLETE")
+		s.repo.UpdateLogStatus(creditLogID, domain.TxLogStatusComplete)
 	}
 
 	log.Printf("[Finalize] Transfer completed: ticket=%s", ticket)
