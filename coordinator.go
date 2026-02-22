@@ -31,7 +31,7 @@ type TxResult struct {
 // Coordinator orchestrates transaction execution, including step execution,
 // compensation, lock management, and state transitions.
 type Coordinator struct {
-	// Dependencies
+	// Dependencies - store is required, others are optional
 	store   TxStore
 	locker  lock.Locker
 	breaker circuit.Breaker
@@ -48,13 +48,6 @@ type Coordinator struct {
 
 // CoordinatorOption is a function that configures the Coordinator.
 type CoordinatorOption func(*Coordinator)
-
-// WithStore sets the store for the coordinator.
-func WithStore(s TxStore) CoordinatorOption {
-	return func(c *Coordinator) {
-		c.store = s
-	}
-}
 
 // WithLocker sets the locker for the coordinator.
 func WithLocker(l lock.Locker) CoordinatorOption {
@@ -91,9 +84,11 @@ func WithCoordinatorConfig(cfg Config) CoordinatorOption {
 	}
 }
 
-// NewCoordinator creates a new Coordinator with the given options.
-func NewCoordinator(opts ...CoordinatorOption) *Coordinator {
+// NewCoordinator creates a new Coordinator with the given store and options.
+// Store is a required dependency for transaction persistence.
+func NewCoordinator(store TxStore, opts ...CoordinatorOption) *Coordinator {
 	c := &Coordinator{
+		store:  store,
 		steps:  make(map[string]Step),
 		config: DefaultConfig(),
 	}

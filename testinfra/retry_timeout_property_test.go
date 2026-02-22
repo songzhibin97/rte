@@ -47,7 +47,7 @@ func TestProperty_RetryBoundedness_Integration(t *testing.T) {
 
 		// Create coordinator with specific max retries
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -163,7 +163,7 @@ func TestProperty_CompensationRetryBoundedness_Integration(t *testing.T) {
 
 		// Create coordinator with specific max retries
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -308,7 +308,7 @@ func TestProperty_TimeoutHandling_Integration(t *testing.T) {
 
 		// Create coordinator with specific timeout
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -449,7 +449,7 @@ func TestProperty_TransactionTimeoutHandling_Integration(t *testing.T) {
 
 		// Create coordinator with specific transaction timeout
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),

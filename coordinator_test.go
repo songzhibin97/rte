@@ -339,7 +339,7 @@ func TestCoordinator_NewCoordinator(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -357,7 +357,7 @@ func TestCoordinator_NewCoordinator(t *testing.T) {
 }
 
 func TestCoordinator_RegisterStep(t *testing.T) {
-	coord := NewCoordinator()
+	coord := NewCoordinator(newMockStore())
 	step := newTestStep("test-step")
 
 	coord.RegisterStep(step)
@@ -377,7 +377,7 @@ func TestCoordinator_ExecuteSimpleTransaction(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -429,7 +429,7 @@ func TestCoordinator_ExecuteWithFailure(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -474,7 +474,7 @@ func TestCoordinator_ExecuteWithCompensation(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -530,7 +530,6 @@ func TestCoordinator_ExecuteWithCompensation(t *testing.T) {
 // Property-Based Tests
 // ============================================================================
 
-
 // For any transaction, the state transitions SHALL only follow the defined state machine paths.
 func TestProperty_TransactionStateConsistency(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
@@ -540,7 +539,7 @@ func TestProperty_TransactionStateConsistency(t *testing.T) {
 		eventBus := event.NewMemoryEventBus()
 
 		coord := NewCoordinator(
-			WithStore(store),
+			store,
 			WithLocker(locker),
 			WithBreaker(breaker),
 			WithEventBus(eventBus),
@@ -604,31 +603,26 @@ func TestProperty_TransactionStateConsistency(t *testing.T) {
 			t.Fatalf("failed to get stored transaction: %v", err)
 		}
 
-		
 		// FAILED is a valid end state for Execute() but not terminal in state machine sense
 		isValidFinalState := IsTxTerminal(storedTx.Status) || storedTx.Status == TxStatusFailed
 		if !isValidFinalState {
 			t.Fatalf("final state %s is not a valid final state", storedTx.Status)
 		}
 
-		
 		if result.Status != storedTx.Status {
 			t.Fatalf("result status %s does not match stored status %s", result.Status, storedTx.Status)
 		}
 
-		
 		if failAtStep == -1 && storedTx.Status != TxStatusCompleted {
 			t.Fatalf("expected COMPLETED for successful transaction, got %s", storedTx.Status)
 		}
 
-		
 		if failAtStep > 0 && supportsCompensation {
 			if storedTx.Status != TxStatusCompensated {
 				t.Fatalf("expected COMPENSATED for failed transaction with compensation, got %s", storedTx.Status)
 			}
 		}
 
-		
 		if failAtStep == 0 || (failAtStep >= 0 && !supportsCompensation) {
 			if storedTx.Status != TxStatusFailed {
 				t.Fatalf("expected FAILED for failed transaction at first step or without compensation, got %s", storedTx.Status)
@@ -636,7 +630,6 @@ func TestProperty_TransactionStateConsistency(t *testing.T) {
 		}
 	})
 }
-
 
 // For any failed transaction with compensation support, all completed steps SHALL be compensated in reverse order.
 func TestProperty_CompensationCompleteness(t *testing.T) {
@@ -647,7 +640,7 @@ func TestProperty_CompensationCompleteness(t *testing.T) {
 		eventBus := event.NewMemoryEventBus()
 
 		coord := NewCoordinator(
-			WithStore(store),
+			store,
 			WithLocker(locker),
 			WithBreaker(breaker),
 			WithEventBus(eventBus),
@@ -712,19 +705,16 @@ func TestProperty_CompensationCompleteness(t *testing.T) {
 		// Execute transaction (should fail and compensate)
 		result, _ := coord.Execute(context.Background(), tx)
 
-		
 		if result.Status != TxStatusCompensated {
 			t.Fatalf("expected COMPENSATED status, got %s", result.Status)
 		}
 
-		
 		// Steps 0 to failAtStep-1 should be compensated (failAtStep failed, so it wasn't completed)
 		expectedCompensations := failAtStep // Steps 0 to failAtStep-1
 		if len(compensationOrder) != expectedCompensations {
 			t.Fatalf("expected %d compensations, got %d: %v", expectedCompensations, len(compensationOrder), compensationOrder)
 		}
 
-		
 		// The first compensation should be for the step just before the failed step
 		for i := 0; i < len(compensationOrder); i++ {
 			expectedStepIndex := failAtStep - 1 - i
@@ -734,7 +724,6 @@ func TestProperty_CompensationCompleteness(t *testing.T) {
 			}
 		}
 
-		
 		steps, err := store.GetSteps(context.Background(), tx.TxID())
 		if err != nil {
 			t.Fatalf("failed to get steps: %v", err)
@@ -773,7 +762,7 @@ func TestResume_LockedStatus(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -829,7 +818,7 @@ func TestResume_ExecutingStatus(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -897,7 +886,7 @@ func TestResume_FailedStatus_Retryable(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -963,7 +952,7 @@ func TestResume_FailedStatus_NotRetryable_WithCompensation(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -1041,7 +1030,7 @@ func TestResume_FailedStatus_NotRetryable_NoCompensation(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -1099,7 +1088,7 @@ func TestResume_DefaultStatus_Completed(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -1134,7 +1123,7 @@ func TestResume_DefaultStatus_Compensated(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -1169,7 +1158,7 @@ func TestResume_DefaultStatus_Cancelled(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -1204,7 +1193,7 @@ func TestResume_DefaultStatus_Created(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -1263,7 +1252,7 @@ func TestCoordinator_ExecuteWithNoLocks(t *testing.T) {
 
 	// Create coordinator without locker to use noOpLockHandle
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
 		WithCoordinatorConfig(Config{
@@ -1311,7 +1300,7 @@ func TestCoordinator_ExecuteWithContextCancellation(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := NewCoordinator(
-		WithStore(store),
+		store,
 		WithLocker(locker),
 		WithBreaker(breaker),
 		WithEventBus(eventBus),
@@ -1374,7 +1363,7 @@ func TestProperty_CompensationReverseOrder(t *testing.T) {
 		eventBus := event.NewMemoryEventBus()
 
 		coord := NewCoordinator(
-			WithStore(store),
+			store,
 			WithLocker(locker),
 			WithBreaker(breaker),
 			WithEventBus(eventBus),
@@ -1439,12 +1428,10 @@ func TestProperty_CompensationReverseOrder(t *testing.T) {
 		// Execute transaction (should fail and compensate)
 		result, _ := coord.Execute(context.Background(), tx)
 
-		
 		if result.Status != TxStatusCompensated {
 			t.Fatalf("expected COMPENSATED status, got %s", result.Status)
 		}
 
-		
 		// Steps 0 to failAtStep-1 should be compensated in reverse order
 		expectedCompensations := failAtStep // Steps 0 to failAtStep-1
 		if len(compensationOrder) != expectedCompensations {
@@ -1476,7 +1463,7 @@ func TestProperty_CompensationExactlyOnce(t *testing.T) {
 		eventBus := event.NewMemoryEventBus()
 
 		coord := NewCoordinator(
-			WithStore(store),
+			store,
 			WithLocker(locker),
 			WithBreaker(breaker),
 			WithEventBus(eventBus),
@@ -1541,12 +1528,10 @@ func TestProperty_CompensationExactlyOnce(t *testing.T) {
 		// Execute transaction (should fail and compensate)
 		result, _ := coord.Execute(context.Background(), tx)
 
-		
 		if result.Status != TxStatusCompensated {
 			t.Fatalf("expected COMPENSATED status, got %s", result.Status)
 		}
 
-		
 		for stepIdx := 0; stepIdx < failAtStep; stepIdx++ {
 			count := compensationCounts[stepIdx]
 			if count != 1 {
@@ -1554,7 +1539,6 @@ func TestProperty_CompensationExactlyOnce(t *testing.T) {
 			}
 		}
 
-		
 		for stepIdx := failAtStep; stepIdx < numSteps; stepIdx++ {
 			count := compensationCounts[stepIdx]
 			if count != 0 {
@@ -1562,7 +1546,6 @@ func TestProperty_CompensationExactlyOnce(t *testing.T) {
 			}
 		}
 
-		
 		totalCompensations := 0
 		for _, count := range compensationCounts {
 			totalCompensations += count

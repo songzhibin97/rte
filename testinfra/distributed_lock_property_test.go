@@ -94,7 +94,6 @@ func TestProperty_DistributedLockMutualExclusion(t *testing.T) {
 		// Wait for all to complete
 		wg.Wait()
 
-		
 		// Note: After the first one releases, others may succeed sequentially
 		// But the key property is that at any instant, at most one holds the lock
 
@@ -183,7 +182,6 @@ func TestProperty_DistributedLockMutualExclusion_Strict(t *testing.T) {
 
 		wg.Wait()
 
-		
 		if maxConcurrentHolders > 1 {
 			rt.Fatalf("Mutual exclusion violated: max concurrent holders = %d (expected <= 1)",
 				maxConcurrentHolders)
@@ -208,9 +206,8 @@ func TestProperty_LockTTLAutoRelease(t *testing.T) {
 	defer ti.Cleanup(t)
 
 	rapid.Check(t, func(rt *rapid.T) {
-		// Generate random TTL between 1-3 seconds (short for testing)
-		ttlSeconds := rapid.IntRange(1, 3).Draw(rt, "ttlSeconds")
-		ttl := time.Duration(ttlSeconds) * time.Second
+		// Short TTL for testing
+		ttl := 100 * time.Millisecond
 
 		// Generate unique lock key for this test iteration
 		lockKey := fmt.Sprintf("ttl-test-%d", atomic.AddInt64(&txIDCounter, 1))
@@ -229,10 +226,9 @@ func TestProperty_LockTTLAutoRelease(t *testing.T) {
 			rt.Fatalf("Second acquisition should fail while lock is held")
 		}
 
-		// Wait for TTL to expire (add buffer for Redis timing)
-		time.Sleep(ttl + 500*time.Millisecond)
+		// Wait for TTL to expire (add small buffer for Redis timing)
+		time.Sleep(ttl + 50*time.Millisecond)
 
-		
 		handle2, err := ti.Locker.Acquire(ctx, []string{lockKey}, 30*time.Second)
 		if err != nil {
 			rt.Fatalf("Acquisition after TTL expiry should succeed: %v", err)
@@ -258,7 +254,7 @@ func TestProperty_LockTTLAutoRelease_MultipleKeys(t *testing.T) {
 		numKeys := rapid.IntRange(2, 4).Draw(rt, "numKeys")
 
 		// Short TTL for testing
-		ttl := 2 * time.Second
+		ttl := 100 * time.Millisecond
 
 		// Generate unique lock keys for this test iteration
 		lockKeys := make([]string, numKeys)
@@ -284,9 +280,8 @@ func TestProperty_LockTTLAutoRelease_MultipleKeys(t *testing.T) {
 		}
 
 		// Wait for TTL to expire
-		time.Sleep(ttl + 500*time.Millisecond)
+		time.Sleep(ttl + 50*time.Millisecond)
 
-		
 		handle2, err := ti.Locker.Acquire(ctx, lockKeys, 30*time.Second)
 		if err != nil {
 			rt.Fatalf("Acquisition after TTL expiry should succeed: %v", err)
@@ -326,7 +321,7 @@ func TestProperty_LockCleanupOnCompletion(t *testing.T) {
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(ti.EventBus),
@@ -370,7 +365,6 @@ func TestProperty_LockCleanupOnCompletion(t *testing.T) {
 			rt.Fatalf("Expected FAILED for failure scenario, got %s", result.Status)
 		}
 
-		
 		// Try to acquire the same lock - should succeed
 		handle, err := ti.Locker.Acquire(context.Background(), []string{lockKey}, 30*time.Second)
 		if err != nil {
@@ -424,7 +418,7 @@ func TestProperty_LockCleanupOnCompletion_WithCompensation(t *testing.T) {
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(ti.EventBus),
@@ -472,7 +466,6 @@ func TestProperty_LockCleanupOnCompletion_WithCompensation(t *testing.T) {
 			rt.Fatalf("Expected COMPENSATED, got %s", result.Status)
 		}
 
-		
 		handle, err := ti.Locker.Acquire(context.Background(), []string{lockKey}, 30*time.Second)
 		if err != nil {
 			rt.Fatalf("Lock should be released after compensation: %v", err)

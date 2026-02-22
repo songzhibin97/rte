@@ -58,7 +58,7 @@ func TestProperty_RecoveryCorrectness_Integration(t *testing.T) {
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -300,7 +300,7 @@ func TestProperty_RecoveryWorkerIntegration(t *testing.T) {
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -461,7 +461,7 @@ func TestProperty_EventPublicationCompleteness_Integration(t *testing.T) {
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -617,7 +617,7 @@ func TestProperty_CompensationFailureAlert_Integration(t *testing.T) {
 
 		// Create coordinator with low max retries for faster test
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -883,7 +883,7 @@ func executeTransfersInOrder(rt *rapid.T, ti *TestInfrastructure, accountStore *
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(ti.EventBus),
@@ -1074,7 +1074,7 @@ func TestProperty_ConcurrentConfluence_Integration(t *testing.T) {
 
 				// Create coordinator
 				coord := rte.NewCoordinator(
-					rte.WithStore(ti.StoreAdapter),
+					ti.StoreAdapter,
 					rte.WithLocker(ti.Locker),
 					rte.WithBreaker(breaker),
 					rte.WithEventBus(ti.EventBus),

@@ -22,8 +22,7 @@ func TestIntegration_NormalExecutionFlow(t *testing.T) {
 	breaker := newMockBreaker()
 	eventBus := event.NewMemoryEventBus()
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -168,8 +167,7 @@ func TestIntegration_FailureAndCompensationFlow(t *testing.T) {
 	breaker := newMockBreaker()
 	eventBus := event.NewMemoryEventBus()
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -290,8 +288,7 @@ func TestIntegration_TimeoutHandling(t *testing.T) {
 	breaker := newMockBreaker()
 	eventBus := event.NewMemoryEventBus()
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -359,8 +356,7 @@ func TestIntegration_StepTimeout(t *testing.T) {
 	breaker := newMockBreaker()
 	eventBus := event.NewMemoryEventBus()
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -409,8 +405,7 @@ func TestIntegration_FailureWithoutCompensation(t *testing.T) {
 	breaker := newMockBreaker()
 	eventBus := event.NewMemoryEventBus()
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -473,8 +468,7 @@ func TestIntegration_CompensationFailure(t *testing.T) {
 		return nil
 	})
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -538,8 +532,7 @@ func TestIntegration_StuckTransactionRecovery(t *testing.T) {
 	breaker := newMockBreaker()
 	eventBus := event.NewMemoryEventBus()
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -623,8 +616,7 @@ func TestIntegration_FailedTransactionRetry(t *testing.T) {
 	breaker := newMockBreaker()
 	eventBus := event.NewMemoryEventBus()
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -709,8 +701,7 @@ func TestIntegration_IdempotencyOnRecovery(t *testing.T) {
 	breaker := newMockBreaker()
 	eventBus := event.NewMemoryEventBus()
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -840,8 +831,7 @@ func TestIntegration_ConcurrentTransactionExecution(t *testing.T) {
 	breaker := newMockBreaker()
 	eventBus := event.NewMemoryEventBus()
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -923,8 +913,7 @@ func TestIntegration_ConcurrentLockContention(t *testing.T) {
 	breaker := newMockBreaker()
 	eventBus := event.NewMemoryEventBus()
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -1048,8 +1037,7 @@ func TestIntegration_ConcurrentStepExecution(t *testing.T) {
 	breaker := newMockBreaker()
 	eventBus := event.NewMemoryEventBus()
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -1143,8 +1131,7 @@ func TestIntegration_EventPublishingDuringConcurrentExecution(t *testing.T) {
 		return nil
 	})
 
-	engine := NewEngine(
-		WithEngineStore(store),
+	engine := NewEngine(store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),

@@ -47,7 +47,7 @@ func TestProperty_IdempotencyRoundTrip_Integration(t *testing.T) {
 
 		// Create coordinator with idempotency checker
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(ti.EventBus),
@@ -141,7 +141,7 @@ func TestProperty_IdempotencyRoundTrip_Integration(t *testing.T) {
 
 			// Create new coordinator with same checker
 			retryCoord := rte.NewCoordinator(
-				rte.WithStore(ti.StoreAdapter),
+				ti.StoreAdapter,
 				rte.WithLocker(ti.Locker),
 				rte.WithBreaker(breaker),
 				rte.WithEventBus(ti.EventBus),

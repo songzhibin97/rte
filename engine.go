@@ -2,7 +2,6 @@ package rte
 
 import (
 	"context"
-	"sync"
 
 	"rte/circuit"
 	"rte/event"
@@ -14,89 +13,78 @@ import (
 // It provides methods for creating and executing transactions, registering steps,
 // and subscribing to events.
 type Engine struct {
-	// coordinator handles transaction execution
+	// coordinator handles transaction execution and holds all dependencies
 	coordinator *Coordinator
+}
 
-	// Step registry
-	steps map[string]Step
-	mu    sync.RWMutex
+// EngineOption is a function that configures the Engine.
+type EngineOption func(*Engine, *engineConfig)
 
-	// Dependencies
-	store   TxStore
+// engineConfig holds the configuration options that will be passed to coordinator
+type engineConfig struct {
 	locker  lock.Locker
 	breaker circuit.Breaker
 	events  event.EventBus
 	checker idempotency.Checker
-
-	// Configuration
-	config Config
-}
-
-// EngineOption is a function that configures the Engine.
-type EngineOption func(*Engine)
-
-// WithEngineStore sets the store for the engine.
-func WithEngineStore(s TxStore) EngineOption {
-	return func(e *Engine) {
-		e.store = s
-	}
+	config  Config
 }
 
 // WithEngineLocker sets the locker for the engine.
 func WithEngineLocker(l lock.Locker) EngineOption {
-	return func(e *Engine) {
-		e.locker = l
+	return func(e *Engine, cfg *engineConfig) {
+		cfg.locker = l
 	}
 }
 
 // WithEngineBreaker sets the circuit breaker for the engine.
 func WithEngineBreaker(b circuit.Breaker) EngineOption {
-	return func(e *Engine) {
-		e.breaker = b
+	return func(e *Engine, cfg *engineConfig) {
+		cfg.breaker = b
 	}
 }
 
 // WithEngineEventBus sets the event bus for the engine.
 func WithEngineEventBus(eb event.EventBus) EngineOption {
-	return func(e *Engine) {
-		e.events = eb
+	return func(e *Engine, cfg *engineConfig) {
+		cfg.events = eb
 	}
 }
 
 // WithEngineChecker sets the idempotency checker for the engine.
 func WithEngineChecker(ch idempotency.Checker) EngineOption {
-	return func(e *Engine) {
-		e.checker = ch
+	return func(e *Engine, cfg *engineConfig) {
+		cfg.checker = ch
 	}
 }
 
 // WithEngineConfig sets the configuration for the engine.
-func WithEngineConfig(cfg Config) EngineOption {
-	return func(e *Engine) {
-		e.config = cfg
+func WithEngineConfig(c Config) EngineOption {
+	return func(e *Engine, cfg *engineConfig) {
+		cfg.config = c
 	}
 }
 
-// NewEngine creates a new Engine with the given options.
-// The engine must be configured with at least a store before executing transactions.
-func NewEngine(opts ...EngineOption) *Engine {
-	e := &Engine{
-		steps:  make(map[string]Step),
+// NewEngine creates a new Engine with the given store and options.
+// Store is a required dependency for transaction persistence.
+func NewEngine(store TxStore, opts ...EngineOption) *Engine {
+	cfg := &engineConfig{
 		config: DefaultConfig(),
 	}
 
+	e := &Engine{}
+
 	for _, opt := range opts {
-		opt(e)
+		opt(e, cfg)
 	}
 
-	// Create coordinator with the same dependencies
+	// Create coordinator with store as required parameter
 	e.coordinator = NewCoordinator(
-		WithStore(e.store),
-		WithLocker(e.locker),
-		WithBreaker(e.breaker),
-		WithEventBus(e.events),
-		WithChecker(e.checker),
-		WithCoordinatorConfig(e.config),
+		store,
+		WithLocker(cfg.locker),
+		WithBreaker(cfg.breaker),
+		WithEventBus(cfg.events),
+		WithChecker(cfg.checker),
+		WithCoordinatorConfig(cfg.config),
 	)
 
 	return e
@@ -105,26 +93,17 @@ func NewEngine(opts ...EngineOption) *Engine {
 // RegisterStep registers a step with the engine.
 // Steps must be registered before they can be used in transactions.
 func (e *Engine) RegisterStep(step Step) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.steps[step.Name()] = step
-	// Also register with coordinator
 	e.coordinator.RegisterStep(step)
 }
 
 // GetStep returns a step by name, or nil if not found.
 func (e *Engine) GetStep(name string) Step {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	return e.steps[name]
+	return e.coordinator.GetStep(name)
 }
 
 // HasStep returns true if a step with the given name is registered.
 func (e *Engine) HasStep(name string) bool {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-	_, ok := e.steps[name]
-	return ok
+	return e.coordinator.HasStep(name)
 }
 
 // NewTransaction creates a new transaction builder with the given type.
@@ -148,18 +127,18 @@ func (e *Engine) Execute(ctx context.Context, tx *Transaction) (*TxResult, error
 // Subscribe subscribes a handler to a specific event type.
 // Multiple handlers can be registered for the same event type.
 func (e *Engine) Subscribe(eventType event.EventType, handler event.EventHandler) error {
-	if e.events == nil {
+	if e.coordinator.events == nil {
 		return nil
 	}
-	return e.events.Subscribe(eventType, handler)
+	return e.coordinator.events.Subscribe(eventType, handler)
 }
 
 // SubscribeAll subscribes a handler to all events.
 func (e *Engine) SubscribeAll(handler event.EventHandler) error {
-	if e.events == nil {
+	if e.coordinator.events == nil {
 		return nil
 	}
-	return e.events.SubscribeAll(handler)
+	return e.coordinator.events.SubscribeAll(handler)
 }
 
 // Coordinator returns the underlying coordinator.
@@ -170,10 +149,10 @@ func (e *Engine) Coordinator() *Coordinator {
 
 // Store returns the underlying store.
 func (e *Engine) Store() TxStore {
-	return e.store
+	return e.coordinator.store
 }
 
 // Config returns the engine configuration.
 func (e *Engine) Config() Config {
-	return e.config
+	return e.coordinator.config
 }

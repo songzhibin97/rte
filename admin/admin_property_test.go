@@ -332,7 +332,7 @@ func TestProperty_RetryCountIncrement(t *testing.T) {
 
 		// Create a coordinator with a simple step that succeeds
 		coord := rte.NewCoordinator(
-			rte.WithStore(store),
+			store,
 			rte.WithCoordinatorConfig(rte.Config{
 				LockTTL:          30 * time.Second,
 				LockExtendPeriod: 10 * time.Second,
@@ -1118,7 +1118,7 @@ func TestProperty_AdminRetryValidation(t *testing.T) {
 
 		// Create coordinator with test step
 		coord := rte.NewCoordinator(
-			rte.WithStore(store),
+			store,
 			rte.WithEventBus(eventBus),
 			rte.WithCoordinatorConfig(rte.Config{
 				LockTTL:          30 * time.Second,
@@ -1214,7 +1214,7 @@ func TestProperty_AdminRetryMaxRetriesValidation(t *testing.T) {
 
 		// Create coordinator with test step
 		coord := rte.NewCoordinator(
-			rte.WithStore(store),
+			store,
 			rte.WithEventBus(eventBus),
 			rte.WithCoordinatorConfig(rte.Config{
 				LockTTL:          30 * time.Second,

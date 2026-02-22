@@ -79,8 +79,13 @@ func NewTestInfrastructure(t *testing.T) *TestInfrastructure {
 		t.Skipf("Skipping test: MySQL connection failed: %v", err)
 	}
 
+	// Configure connection pool to prevent exhaustion
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(time.Minute)
+
 	// Test MySQL connection
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()
@@ -115,7 +120,7 @@ func NewTestInfrastructure(t *testing.T) *TestInfrastructure {
 
 	// Create engine with store adapter
 	engine := rte.NewEngine(
-		rte.WithEngineStore(storeAdapter),
+		storeAdapter,
 		rte.WithEngineLocker(locker),
 		rte.WithEngineBreaker(breaker),
 		rte.WithEngineEventBus(eventBus),
@@ -156,6 +161,11 @@ func NewTestInfrastructureWithConfig(t *testing.T, cfg TestConfig) *TestInfrastr
 		t.Skipf("Skipping test: MySQL connection failed: %v", err)
 	}
 
+	// Configure connection pool to prevent exhaustion
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(time.Minute)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
@@ -182,7 +192,7 @@ func NewTestInfrastructureWithConfig(t *testing.T, cfg TestConfig) *TestInfrastr
 	breaker := memory.NewMemoryBreaker()
 
 	engine := rte.NewEngine(
-		rte.WithEngineStore(storeAdapter),
+		storeAdapter,
 		rte.WithEngineLocker(locker),
 		rte.WithEngineBreaker(breaker),
 		rte.WithEngineEventBus(eventBus),

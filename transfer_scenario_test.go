@@ -855,7 +855,7 @@ func TestTransferScenario_SavingToForex_Success(t *testing.T) {
 	initialTotal := accountStore.GetTotalBalance()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -940,7 +940,7 @@ func TestTransferScenario_SavingToForex_ExternalFailure(t *testing.T) {
 	initialFromBalance := 1000.0
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -1010,7 +1010,7 @@ func TestTransferScenario_SavingToForex_UncertainTimeout(t *testing.T) {
 	accountStore.CreateAccount(&Account{ID: 2, UserID: 100, Type: "forex", Balance: 500.0})
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -1086,7 +1086,7 @@ func TestProperty_BalanceConservation(t *testing.T) {
 		initialTotal := accountStore.GetTotalBalance()
 
 		engine := NewEngine(
-			WithEngineStore(store),
+			store,
 			WithEngineLocker(locker),
 			WithEngineBreaker(breaker),
 			WithEngineEventBus(eventBus),
@@ -1154,7 +1154,7 @@ func TestProperty_IdempotentExecution(t *testing.T) {
 		accountStore.CreateAccount(&Account{ID: 2, Balance: 500})
 
 		engine := NewEngine(
-			WithEngineStore(store),
+			store,
 			WithEngineLocker(locker),
 			WithEngineBreaker(breaker),
 			WithEngineEventBus(eventBus),
@@ -1242,7 +1242,7 @@ func TestProperty_LockExclusivity(t *testing.T) {
 	trackableLocker := newTrackableMockLocker()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(trackableLocker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -1335,7 +1335,7 @@ func TestProperty_RetryBounded(t *testing.T) {
 		maxRetries := rapid.IntRange(1, 5).Draw(t, "max_retries")
 
 		engine := NewEngine(
-			WithEngineStore(store),
+			store,
 			WithEngineLocker(locker),
 			WithEngineBreaker(breaker),
 			WithEngineEventBus(eventBus),
@@ -1416,7 +1416,7 @@ func TestProperty_CompensationCompleteness_Transfer(t *testing.T) {
 		}
 
 		engine := NewEngine(
-			WithEngineStore(store),
+			store,
 			WithEngineLocker(locker),
 			WithEngineBreaker(breaker),
 			WithEngineEventBus(eventBus),
@@ -1665,7 +1665,7 @@ func TestTransferScenario_ForexToForex_Success(t *testing.T) {
 	initialTotal := accountStore.GetTotalBalance()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -1745,7 +1745,7 @@ func TestTransferScenario_ForexToForex_DepositFailure(t *testing.T) {
 	initialTotal := accountStore.GetTotalBalance()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -1820,7 +1820,7 @@ func TestTransferScenario_ForexToSaving_Success(t *testing.T) {
 	initialTotal := accountStore.GetTotalBalance()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -1913,7 +1913,7 @@ func TestTransferScenario_ForexToSaving_InsufficientBalance(t *testing.T) {
 	initialToBalance := 500.0
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -1990,7 +1990,7 @@ func TestTransferScenario_ForexToSaving_ExternalFailure(t *testing.T) {
 	initialToBalance := 500.0
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -2282,7 +2282,7 @@ func TestTransferScenario_CrossPlatform_PlatformAToPlatformB_Success(t *testing.
 	initialTotal := accountStore.GetTotalBalance()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -2373,7 +2373,7 @@ func TestTransferScenario_CrossPlatform_PlatformBToPlatformA_Success(t *testing.
 	initialTotal := accountStore.GetTotalBalance()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -2467,7 +2467,7 @@ func TestTransferScenario_CrossPlatform_DepositFailure(t *testing.T) {
 	initialToBalance := 500.0
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -3399,7 +3399,7 @@ func TestProperty_RecoveryConsistency(t *testing.T) {
 		}
 
 		engine := NewEngine(
-			WithEngineStore(store),
+			store,
 			WithEngineLocker(locker),
 			WithEngineBreaker(breaker),
 			WithEngineEventBus(eventBus),
@@ -3629,7 +3629,7 @@ func TestProperty_RecoveryConsistency_BalanceInvariant(t *testing.T) {
 		}
 
 		engine := NewEngine(
-			WithEngineStore(store),
+			store,
 			WithEngineLocker(locker),
 			WithEngineBreaker(breaker),
 			WithEngineEventBus(eventBus),
@@ -3703,7 +3703,7 @@ func TestConcurrent_SameAccountTransfers(t *testing.T) {
 	trackableLocker := newTrackableMockLocker()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(trackableLocker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -3821,7 +3821,7 @@ func TestConcurrent_SameAccountMultipleTargets(t *testing.T) {
 	trackableLocker := newTrackableMockLocker()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(trackableLocker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -3924,7 +3924,7 @@ func TestConcurrent_BidirectionalTransfers(t *testing.T) {
 	trackableLocker := newTrackableMockLocker()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(trackableLocker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -4053,7 +4053,7 @@ func TestConcurrent_LockContention(t *testing.T) {
 	contentionLocker := newContentionMockLocker()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(contentionLocker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -4271,7 +4271,7 @@ func runTransfersSequentially(t *rapid.T, fromBalance, toBalance float64, amount
 	accountStore.CreateAccount(&Account{ID: 2, Balance: toBalance})
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -4387,7 +4387,7 @@ func runTransfersConcurrently(fromBalance, toBalance float64, amounts []float64)
 	accountStore.CreateAccount(&Account{ID: 2, Balance: toBalance})
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -4514,7 +4514,7 @@ func runBidirectionalTransfers(balance1, balance2 float64, amounts1to2, amounts2
 	accountStore.CreateAccount(&Account{ID: 2, Balance: balance2})
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),

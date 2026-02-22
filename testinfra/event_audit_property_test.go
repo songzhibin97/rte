@@ -51,7 +51,7 @@ func TestProperty_EventCompleteness_Integration(t *testing.T) {
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -299,7 +299,7 @@ func TestProperty_NonBlockingEventDelivery_Integration(t *testing.T) {
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -456,7 +456,7 @@ func TestProperty_SlowHandlerNonBlocking_Integration(t *testing.T) {
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -564,7 +564,7 @@ func TestProperty_ErrorHandlerIsolation_Integration(t *testing.T) {
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),

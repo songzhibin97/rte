@@ -23,7 +23,7 @@ func TestEngine_NewEngine(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -32,16 +32,16 @@ func TestEngine_NewEngine(t *testing.T) {
 	if engine == nil {
 		t.Fatal("expected engine to be created")
 	}
-	if engine.store == nil {
+	if engine.Store() == nil {
 		t.Error("expected store to be set")
 	}
-	if engine.locker == nil {
+	if engine.coordinator.locker == nil {
 		t.Error("expected locker to be set")
 	}
-	if engine.breaker == nil {
+	if engine.coordinator.breaker == nil {
 		t.Error("expected breaker to be set")
 	}
-	if engine.events == nil {
+	if engine.coordinator.events == nil {
 		t.Error("expected event bus to be set")
 	}
 	if engine.coordinator == nil {
@@ -61,20 +61,20 @@ func TestEngine_NewEngineWithConfig(t *testing.T) {
 	}
 
 	engine := NewEngine(
-		WithEngineStore(newMockStore()),
+		newMockStore(),
 		WithEngineConfig(config),
 	)
 
-	if engine.config.LockTTL != 60*time.Second {
-		t.Errorf("expected LockTTL 60s, got %v", engine.config.LockTTL)
+	if engine.Config().LockTTL != 60*time.Second {
+		t.Errorf("expected LockTTL 60s, got %v", engine.Config().LockTTL)
 	}
-	if engine.config.MaxRetries != 5 {
-		t.Errorf("expected MaxRetries 5, got %d", engine.config.MaxRetries)
+	if engine.Config().MaxRetries != 5 {
+		t.Errorf("expected MaxRetries 5, got %d", engine.Config().MaxRetries)
 	}
 }
 
 func TestEngine_RegisterStep(t *testing.T) {
-	engine := NewEngine(WithEngineStore(newMockStore()))
+	engine := NewEngine(newMockStore())
 	step := newTestStep("test-step")
 
 	engine.RegisterStep(step)
@@ -92,7 +92,7 @@ func TestEngine_RegisterStep(t *testing.T) {
 }
 
 func TestEngine_NewTransaction(t *testing.T) {
-	engine := NewEngine(WithEngineStore(newMockStore()))
+	engine := NewEngine(newMockStore())
 	step := newTestStep("step1")
 	engine.RegisterStep(step)
 
@@ -110,7 +110,7 @@ func TestEngine_NewTransaction(t *testing.T) {
 }
 
 func TestEngine_NewTransaction_ValidatesSteps(t *testing.T) {
-	engine := NewEngine(WithEngineStore(newMockStore()))
+	engine := NewEngine(newMockStore())
 	// Don't register any steps
 
 	// Try to create transaction with unregistered step
@@ -127,7 +127,7 @@ func TestEngine_NewTransaction_ValidatesSteps(t *testing.T) {
 }
 
 func TestEngine_NewTransactionWithID(t *testing.T) {
-	engine := NewEngine(WithEngineStore(newMockStore()))
+	engine := NewEngine(newMockStore())
 	step := newTestStep("step1")
 	engine.RegisterStep(step)
 
@@ -154,7 +154,7 @@ func TestEngine_ExecuteCompleteTransaction(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -250,7 +250,7 @@ func TestEngine_ExecuteWithFailureAndCompensation(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -349,7 +349,7 @@ func TestEngine_ExecuteWithFailureNoCompensation(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),
@@ -398,7 +398,7 @@ func TestEngine_ExecuteWithFailureNoCompensation(t *testing.T) {
 func TestEngine_Subscribe(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 	engine := NewEngine(
-		WithEngineStore(newMockStore()),
+		newMockStore(),
 		WithEngineLocker(newMockLocker()),
 		WithEngineBreaker(newMockBreaker()),
 		WithEngineEventBus(eventBus),
@@ -468,7 +468,7 @@ func TestEngine_Subscribe(t *testing.T) {
 func TestEngine_SubscribeAll(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 	engine := NewEngine(
-		WithEngineStore(newMockStore()),
+		newMockStore(),
 		WithEngineLocker(newMockLocker()),
 		WithEngineBreaker(newMockBreaker()),
 		WithEngineEventBus(eventBus),
@@ -515,7 +515,7 @@ func TestEngine_SubscribeAll(t *testing.T) {
 
 func TestEngine_SubscribeWithNilEventBus(t *testing.T) {
 	// Engine without event bus
-	engine := NewEngine(WithEngineStore(newMockStore()))
+	engine := NewEngine(newMockStore())
 
 	// Subscribe should not panic
 	err := engine.Subscribe(event.EventTxCreated, func(ctx context.Context, e event.Event) error {
@@ -536,7 +536,7 @@ func TestEngine_SubscribeWithNilEventBus(t *testing.T) {
 }
 
 func TestEngine_Coordinator(t *testing.T) {
-	engine := NewEngine(WithEngineStore(newMockStore()))
+	engine := NewEngine(newMockStore())
 
 	coord := engine.Coordinator()
 	if coord == nil {
@@ -546,7 +546,7 @@ func TestEngine_Coordinator(t *testing.T) {
 
 func TestEngine_Store(t *testing.T) {
 	store := newMockStore()
-	engine := NewEngine(WithEngineStore(store))
+	engine := NewEngine(store)
 
 	if engine.Store() != store {
 		t.Error("expected same store instance")
@@ -558,7 +558,7 @@ func TestEngine_Config(t *testing.T) {
 		MaxRetries: 10,
 	}
 	engine := NewEngine(
-		WithEngineStore(newMockStore()),
+		newMockStore(),
 		WithEngineConfig(config),
 	)
 
@@ -578,7 +578,7 @@ func TestEngine_FullIntegrationFlow(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	engine := NewEngine(
-		WithEngineStore(store),
+		store,
 		WithEngineLocker(locker),
 		WithEngineBreaker(breaker),
 		WithEngineEventBus(eventBus),

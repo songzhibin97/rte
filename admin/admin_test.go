@@ -661,7 +661,7 @@ func TestAdmin_RetryTransaction(t *testing.T) {
 
 	// Create coordinator with test step
 	coord := rte.NewCoordinator(
-		rte.WithStore(store),
+		store,
 		rte.WithLocker(locker),
 		rte.WithBreaker(breaker),
 		rte.WithEventBus(eventBus),
@@ -1251,7 +1251,7 @@ func TestAdmin_ForceCancel_WithCompensation(t *testing.T) {
 
 	// Create coordinator with compensatable step
 	coord := rte.NewCoordinator(
-		rte.WithStore(store),
+		store,
 		rte.WithLocker(locker),
 		rte.WithBreaker(breaker),
 		rte.WithEventBus(eventBus),
@@ -1365,7 +1365,7 @@ func TestAdmin_CompensateTransaction(t *testing.T) {
 
 	// Create coordinator with multiple compensatable steps
 	coord := rte.NewCoordinator(
-		rte.WithStore(store),
+		store,
 		rte.WithLocker(locker),
 		rte.WithBreaker(breaker),
 		rte.WithEventBus(eventBus),
@@ -1500,7 +1500,7 @@ func TestAPIHandler_HandleRetry(t *testing.T) {
 
 	// Create coordinator with test step
 	coord := rte.NewCoordinator(
-		rte.WithStore(store),
+		store,
 		rte.WithLocker(locker),
 		rte.WithBreaker(breaker),
 		rte.WithEventBus(eventBus),
@@ -2949,7 +2949,7 @@ func TestAdminServer_WithServerCoordinator(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	coord := rte.NewCoordinator(
-		rte.WithStore(store),
+		store,
 		rte.WithLocker(locker),
 		rte.WithBreaker(breaker),
 		rte.WithEventBus(eventBus),

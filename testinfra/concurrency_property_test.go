@@ -50,7 +50,7 @@ func TestProperty_IdempotentExecution_Integration(t *testing.T) {
 
 		// Create coordinator with idempotency checker
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(ti.Breaker),
 			rte.WithEventBus(ti.EventBus),
@@ -105,7 +105,6 @@ func TestProperty_IdempotentExecution_Integration(t *testing.T) {
 
 		wg.Wait()
 
-		
 		// Note: Due to race conditions in concurrent execution, we may have more than 1 execution
 		// if the idempotency check and mark are not atomic. However, for sequential execution,
 		// we should have exactly 1 execution.
@@ -113,7 +112,6 @@ func TestProperty_IdempotentExecution_Integration(t *testing.T) {
 			rt.Fatalf("Expected at least 1 execution, got 0")
 		}
 
-		
 		var firstResultVal int
 		firstResultSet := false
 		for i, result := range results {
@@ -224,7 +222,7 @@ func TestProperty_LockExclusivity_Integration(t *testing.T) {
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(ti.EventBus),
@@ -281,13 +279,11 @@ func TestProperty_LockExclusivity_Integration(t *testing.T) {
 
 		wg.Wait()
 
-		
 		if maxConcurrentHolders > 1 {
 			rt.Fatalf("Lock exclusivity violated: max concurrent holders = %d (expected <= 1)",
 				maxConcurrentHolders)
 		}
 
-		
 		if successCount == 0 {
 			rt.Fatalf("Expected at least one successful transaction, got 0 (failures: %d)", failCount)
 		}
@@ -431,13 +427,11 @@ func TestProperty_OptimisticLockCorrectness_Integration(t *testing.T) {
 
 		wg.Wait()
 
-		
 		if successCount != 1 {
 			rt.Fatalf("Expected exactly 1 successful update, got %d (conflicts: %d)",
 				successCount, versionConflictCount)
 		}
 
-		
 		finalTx, err := ti.StoreAdapter.GetTransaction(context.Background(), txID)
 		if err != nil {
 			rt.Fatalf("failed to get final transaction: %v", err)
@@ -448,7 +442,6 @@ func TestProperty_OptimisticLockCorrectness_Integration(t *testing.T) {
 			rt.Fatalf("Version mismatch: expected %d, got %d", expectedVersion, finalTx.Version)
 		}
 
-		
 		expectedConflicts := int64(concurrency - 1)
 		if versionConflictCount != expectedConflicts {
 			rt.Fatalf("Expected %d version conflicts, got %d", expectedConflicts, versionConflictCount)
@@ -491,7 +484,7 @@ func TestProperty_IdempotentExecution_Sequential(t *testing.T) {
 
 		// Create coordinator with idempotency checker
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -537,12 +530,10 @@ func TestProperty_IdempotentExecution_Sequential(t *testing.T) {
 			results[i] = result
 		}
 
-		
 		if actualExecutions != 1 {
 			rt.Fatalf("Expected exactly 1 execution, got %d", actualExecutions)
 		}
 
-		
 		for i, result := range results {
 			if result == nil {
 				rt.Fatalf("Result %d is nil", i)

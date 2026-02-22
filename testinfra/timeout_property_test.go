@@ -55,7 +55,7 @@ func TestProperty_StepTimeoutHandling(t *testing.T) {
 
 		// Create coordinator with specific step timeout
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -203,7 +203,7 @@ func TestProperty_TransactionTimeoutHandling(t *testing.T) {
 
 		// Create coordinator with specific transaction timeout
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),

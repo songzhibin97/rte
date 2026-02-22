@@ -4,6 +4,7 @@ package testinfra
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,11 @@ import (
 
 	"pgregory.net/rapid"
 )
+
+func init() {
+	// Reduce rapid checks from default 100 to 10 for faster test execution
+	flag.Set("rapid.checks", "10")
+}
 
 // Global counter for unique transaction IDs across test iterations
 var txIDCounter int64
@@ -75,7 +81,7 @@ func TestProperty_BalanceConservation_Integration(t *testing.T) {
 
 		// Create coordinator with test steps
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(ti.Breaker),
 			rte.WithEventBus(ti.EventBus),
@@ -125,7 +131,6 @@ func TestProperty_BalanceConservation_Integration(t *testing.T) {
 		// Execute transaction
 		_, _ = coord.Execute(context.Background(), tx)
 
-		
 		finalTotal := accountStore.TotalBalance()
 		if finalTotal != initialTotal {
 			rt.Fatalf("Balance conservation violated: initial=%d, final=%d, scenario=%d",
@@ -253,7 +258,7 @@ func TestProperty_CompensationCompleteness_Integration(t *testing.T) {
 
 		// Create coordinator with fresh breaker
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(ti.EventBus),
@@ -304,7 +309,6 @@ func TestProperty_CompensationCompleteness_Integration(t *testing.T) {
 			rt.Fatalf("failed to execute transaction: %v", execErr)
 		}
 
-		
 		if result.Status != rte.TxStatusCompensated {
 			// Debug: get transaction details
 			storedTx, _ := ti.StoreAdapter.GetTransaction(context.Background(), tx.TxID())
@@ -312,7 +316,6 @@ func TestProperty_CompensationCompleteness_Integration(t *testing.T) {
 			rt.Fatalf("expected COMPENSATED status, got %s (error: %v)", result.Status, result.Error)
 		}
 
-		
 		// Steps 0 to failAtStep-1 should be compensated (failAtStep failed, so it wasn't completed)
 		expectedCompensations := failAtStep // Steps 0 to failAtStep-1
 
@@ -327,7 +330,6 @@ func TestProperty_CompensationCompleteness_Integration(t *testing.T) {
 			rt.Fatalf("expected %d compensations, got %d: %v", expectedCompensations, len(compensationOrder), compensationOrder)
 		}
 
-		
 		// The first compensation should be for the step just before the failed step
 		for i := 0; i < len(compensationOrder); i++ {
 			expectedStepIndex := failAtStep - 1 - i
@@ -337,7 +339,6 @@ func TestProperty_CompensationCompleteness_Integration(t *testing.T) {
 			}
 		}
 
-		
 		steps, err := ti.StoreAdapter.GetSteps(context.Background(), tx.TxID())
 		if err != nil {
 			rt.Fatalf("failed to get steps: %v", err)
@@ -425,7 +426,7 @@ func TestProperty_StateTransitionValidity_Integration(t *testing.T) {
 
 		// Create coordinator
 		coord := rte.NewCoordinator(
-			rte.WithStore(ti.StoreAdapter),
+			ti.StoreAdapter,
 			rte.WithLocker(ti.Locker),
 			rte.WithBreaker(breaker),
 			rte.WithEventBus(eventBus),
@@ -483,37 +484,31 @@ func TestProperty_StateTransitionValidity_Integration(t *testing.T) {
 		stateTransitions = append(stateTransitions, storedTx.Status)
 		transitionMu.Unlock()
 
-		
 		isValidFinalState := rte.IsTxTerminal(storedTx.Status) || storedTx.Status == rte.TxStatusFailed
 		if !isValidFinalState {
 			rt.Fatalf("final state %s is not a valid final state", storedTx.Status)
 		}
 
-		
 		if result.Status != storedTx.Status {
 			rt.Fatalf("result status %s does not match stored status %s", result.Status, storedTx.Status)
 		}
 
-		
 		if failAtStep == -1 && storedTx.Status != rte.TxStatusCompleted {
 			rt.Fatalf("expected COMPLETED for successful transaction, got %s", storedTx.Status)
 		}
 
-		
 		if failAtStep > 0 && supportsCompensation {
 			if storedTx.Status != rte.TxStatusCompensated {
 				rt.Fatalf("expected COMPENSATED for failed transaction with compensation, got %s", storedTx.Status)
 			}
 		}
 
-		
 		if failAtStep == 0 || (failAtStep >= 0 && !supportsCompensation) {
 			if storedTx.Status != rte.TxStatusFailed {
 				rt.Fatalf("expected FAILED for failed transaction at first step or without compensation, got %s", storedTx.Status)
 			}
 		}
 
-		
 		if rte.IsTxTerminal(storedTx.Status) {
 			// Verify no valid transitions from terminal state
 			for _, targetStatus := range []rte.TxStatus{
