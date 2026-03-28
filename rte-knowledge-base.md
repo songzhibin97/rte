@@ -37,9 +37,16 @@ rte/
 CREATED → LOCKED → EXECUTING → CONFIRMING → COMPLETED
                       ↓
                    FAILED → COMPENSATING → COMPENSATED
-                                ↓
-                        COMPENSATION_FAILED
+                      ↓            ↓
+                 EXECUTING   COMPENSATION_FAILED
+                 （重试）
+                      ↓
+                  CANCELLED
+                  （强制取消）
 ```
+
+步骤级状态机补充：
+- `StepStatusFailed → StepStatusExecuting`（步骤重试）
 
 ## 关键接口
 
@@ -59,18 +66,69 @@ type Step interface {
 ### TxStore 接口
 ```go
 type TxStore interface {
+    // 事务操作
     CreateTransaction(ctx context.Context, tx *StoreTx) error
     UpdateTransaction(ctx context.Context, tx *StoreTx) error
     GetTransaction(ctx context.Context, txID string) (*StoreTx, error)
+
+    // 步骤操作
     CreateStep(ctx context.Context, step *StoreStepRecord) error
     UpdateStep(ctx context.Context, step *StoreStepRecord) error
     GetStep(ctx context.Context, txID string, stepIndex int) (*StoreStepRecord, error)
     GetSteps(ctx context.Context, txID string) ([]*StoreStepRecord, error)
+
+    // 恢复查询
+    GetPendingTransactions(ctx context.Context, olderThan time.Duration) ([]*StoreTx, error)
     GetStuckTransactions(ctx context.Context, olderThan time.Duration) ([]*StoreTx, error)
     GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*StoreTx, error)
+
+    // 管理查询
     ListTransactions(ctx context.Context, filter *StoreTxFilter) ([]*StoreTx, int64, error)
+    CountTransactionsByStatus(ctx context.Context) (map[TxStatus]int64, error)
+
+    // 幂等性操作
+    CheckIdempotency(ctx context.Context, key string) (exists bool, result []byte, err error)
+    MarkIdempotency(ctx context.Context, key string, result []byte, ttl time.Duration) error
+    DeleteExpiredIdempotency(ctx context.Context) (int64, error)
 }
 ```
+
+TxStore 直接由 MySQL 实现（`store/mysql`），不存在额外的 store.Store 包装接口。
+
+### Breaker 接口（熔断器管理器）
+
+```go
+// circuit/breaker.go
+
+type Breaker interface {
+    // Get 返回指定服务的熔断器（使用默认配置）
+    Get(service string) CircuitBreaker
+    // GetWithConfig 返回指定服务的熔断器（使用自定义配置）
+    GetWithConfig(service string, config BreakerConfig) CircuitBreaker
+    // List 返回所有已注册的熔断器，按服务名排序
+    List() []ServiceBreaker
+}
+
+// ServiceBreaker 将服务名与其 CircuitBreaker 实例配对
+type ServiceBreaker struct {
+    Service string
+    Breaker CircuitBreaker
+}
+```
+
+### Recovery Worker Coordinator 接口
+
+`recovery` 包内部定义的 `Coordinator` 接口（由 `*rte.Coordinator` 实现）：
+
+```go
+// recovery/worker.go
+
+type Coordinator interface {
+    Resume(ctx context.Context, tx *rte.StoreTx) (*rte.TxResult, error)
+}
+```
+
+注意：不存在 `recovery.StoreTx` 或 `recovery.TxStore` 类型，recovery 包直接使用 `rte.StoreTx` 和 `rte.TxStore`。
 
 ## 开发指南
 
@@ -80,6 +138,20 @@ type TxStore interface {
 2. 实现 `Execute` 方法
 3. 如需补偿，实现 `Compensate` 并返回 `SupportsCompensation() = true`
 4. 如需幂等性，实现 `IdempotencyKey` 并返回 `SupportsIdempotency() = true`
+
+### Engine 初始化
+
+```go
+engine := rte.NewEngine(store,
+    rte.WithEngineLocker(locker),
+    rte.WithEngineBreaker(breaker),
+    rte.WithEngineEventBus(eventBus),
+    rte.WithEngineChecker(checker),
+    rte.WithEngineConfig(cfg),
+)
+```
+
+`NewEngine(store TxStore, opts ...EngineOption)` — store 为必传参数，其余通过 `EngineOption` 注入，不存在 `WithEngineStore` 选项。
 
 ### 事务构建
 
@@ -200,6 +272,30 @@ engine.go
             ├── event (EventBus)
             └── idempotency (Checker)
 ```
+
+## Prometheus 指标
+
+指标前缀默认为 `rte_`，主要指标包括：`tx_started_total`、`tx_completed_total`、`tx_failed_total`、`step_failed_total`、`circuit_breaker_state` 等。
+
+### reason 标签白名单机制
+
+`tx_failed_total` 和 `step_failed_total` 等计数器带有 `reason` 标签。为防止用户传入任意字符串导致 Prometheus 基数爆炸（OOM），实现层维护了一个白名单（`knownReasons`）：
+
+| 白名单值 | 含义 |
+|---|---|
+| `timeout` | 超时 |
+| `cancelled` | 已取消 |
+| `compensation_failed` | 补偿失败 |
+| `step_error` | 步骤错误 |
+| `lock_failed` | 锁获取失败 |
+| `circuit_open` | 熔断器开路 |
+| `idempotency_failed` | 幂等检查失败 |
+| `version_conflict` | 乐观锁版本冲突 |
+| `store_error` | 存储层错误 |
+| `context_cancelled` | context 已取消 |
+| `context_deadline` | context 超时 |
+
+不在白名单内的 reason 值统一归并为 `other`（由 `normalizeReason` 函数处理，位于 `metrics/prometheus/prometheus.go`）。
 
 ## 版本信息
 

@@ -62,9 +62,9 @@ func main() {
     // 初始化事件总线
     eventBus := event.NewMemoryEventBus()
     
-    // 创建引擎
+    // 创建引擎（store 是必需的第一个参数）
     engine := rte.NewEngine(
-        rte.WithEngineStore(store),
+        store,
         rte.WithEngineLocker(locker),
         rte.WithEngineBreaker(breaker),
         rte.WithEngineEventBus(eventBus),
@@ -179,8 +179,12 @@ log.Printf("Output: %v", result.Output)
 
 ```
 CREATED → LOCKED → EXECUTING → CONFIRMING → COMPLETED
-                      ↓
-                   FAILED → COMPENSATING → COMPENSATED
+                      ↓              ↓
+                   FAILED ←──────────┘
+                   ↙  ↓  ↘
+        EXECUTING  │  │  CANCELLED（强制取消，不补偿）
+        （重试）    │  ↓
+                   └→ COMPENSATING → COMPENSATED
                                 ↓
                         COMPENSATION_FAILED
 ```
@@ -202,29 +206,37 @@ CREATED → LOCKED → EXECUTING → CONFIRMING → COMPLETED
 ## 事件订阅
 
 ```go
-// 订阅特定事件
-engine.Subscribe(event.EventTxCompleted, func(ctx context.Context, e event.Event) error {
+// 订阅特定事件（Subscribe 在未配置 EventBus 时返回 error，需处理返回值）
+if err := engine.Subscribe(event.EventTxCompleted, func(ctx context.Context, e event.Event) error {
     log.Printf("Transaction %s completed", e.TxID)
     return nil
-})
+}); err != nil {
+    log.Printf("failed to subscribe: %v", err)
+}
 
-engine.Subscribe(event.EventTxFailed, func(ctx context.Context, e event.Event) error {
+if err := engine.Subscribe(event.EventTxFailed, func(ctx context.Context, e event.Event) error {
     log.Printf("Transaction %s failed: %v", e.TxID, e.Error)
     // 发送告警通知
     return nil
-})
+}); err != nil {
+    log.Printf("failed to subscribe: %v", err)
+}
 
-engine.Subscribe(event.EventAlertCritical, func(ctx context.Context, e event.Event) error {
+if err := engine.Subscribe(event.EventAlertCritical, func(ctx context.Context, e event.Event) error {
     // 补偿失败等严重告警
     alertService.SendCritical(e.TxID, e.Data["message"])
     return nil
-})
+}); err != nil {
+    log.Printf("failed to subscribe: %v", err)
+}
 
 // 订阅所有事件
-engine.SubscribeAll(func(ctx context.Context, e event.Event) error {
+if err := engine.SubscribeAll(func(ctx context.Context, e event.Event) error {
     log.Printf("[%s] %s - %s", e.Type, e.TxID, e.StepName)
     return nil
-})
+}); err != nil {
+    log.Printf("failed to subscribe all: %v", err)
+}
 ```
 
 ### 可用事件类型
@@ -439,6 +451,7 @@ engine.Subscribe(event.EventTxCompleted, func(ctx context.Context, e event.Event
 | `rte_tx_completed_total` | Counter | 事务完成总数 |
 | `rte_tx_failed_total` | Counter | 失败事务数 |
 | `rte_tx_compensated_total` | Counter | 补偿完成事务数 |
+| `rte_tx_compensation_failed_total` | Counter | 补偿失败事务数 |
 | `rte_tx_duration_seconds` | Histogram | 事务执行时间 |
 | `rte_step_started_total` | Counter | 步骤启动总数 |
 | `rte_step_completed_total` | Counter | 步骤完成总数 |
@@ -446,9 +459,14 @@ engine.Subscribe(event.EventTxCompleted, func(ctx context.Context, e event.Event
 | `rte_step_duration_seconds` | Histogram | 步骤执行时间 |
 | `rte_circuit_breaker_state` | Gauge | 熔断器状态 (0=关闭, 1=打开, 2=半开) |
 | `rte_lock_acquired_total` | Counter | 锁获取总数 |
+| `rte_lock_failed_total` | Counter | 锁获取失败总数 |
+| `rte_lock_extended_total` | Counter | 锁续期总数 |
+| `rte_lock_extend_failed_total` | Counter | 锁续期失败总数 |
 | `rte_lock_acquire_duration_seconds` | Histogram | 锁获取时间 |
 | `rte_recovery_scanned_total` | Counter | 恢复扫描数 |
 | `rte_recovery_processed_total` | Counter | 恢复处理数 |
+
+**reason 标签说明：** `rte_tx_failed_total`、`rte_step_failed_total`、`rte_lock_failed_total` 等带 `reason` 标签的指标使用白名单机制，未知值统一映射为 `"other"`，防止标签基数爆炸。已知的 reason 值有：`timeout`、`cancelled`、`compensation_failed`、`step_error`、`lock_failed`、`circuit_open`、`idempotency_failed`、`version_conflict`、`store_error`、`context_cancelled`、`context_deadline`。
 
 ## OpenTelemetry 追踪
 
