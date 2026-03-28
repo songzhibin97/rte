@@ -72,6 +72,8 @@ var validTxTransitions = map[TxStatus][]TxStatus{
 	TxStatusCompleted: {},
 	TxStatusFailed: {
 		TxStatusCompensating,
+		TxStatusExecuting, // retry: allows resuming failed transactions
+		TxStatusCancelled, // force cancel without compensation
 	},
 	TxStatusCompensating: {
 		TxStatusCompensated,
@@ -131,6 +133,7 @@ var validStepTransitions = map[StepStatus][]StepStatus{
 		StepStatusCompensating,
 	},
 	StepStatusFailed: {
+		StepStatusExecuting, // retry
 		StepStatusCompensating,
 		StepStatusSkipped,
 	},

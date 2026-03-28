@@ -12,7 +12,6 @@ import (
 	"pgregory.net/rapid"
 
 	"rte"
-	"rte/store"
 )
 
 // ============================================================================
@@ -28,12 +27,12 @@ func newTestStore(t *testing.T) (*MySQLStore, sqlmock.Sqlmock, func()) {
 	return s, mock, func() { db.Close() }
 }
 
-func createTestTransaction(txID, txType string) *store.Transaction {
-	return store.NewTransaction(txID, txType, []string{"step1", "step2"})
+func createTestTransaction(txID, txType string) *rte.StoreTx {
+	return rte.NewStoreTx(txID, txType, []string{"step1", "step2"})
 }
 
-func createTestStep(txID string, stepIndex int, stepName string) *store.StepRecord {
-	return store.NewStepRecord(txID, stepIndex, stepName)
+func createTestStep(txID string, stepIndex int, stepName string) *rte.StoreStepRecord {
+	return rte.NewStoreStepRecord(txID, stepIndex, stepName)
 }
 
 // ============================================================================
@@ -615,9 +614,11 @@ func TestMySQLStore_ListTransactions(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now()
-	filter := store.NewTxFilter().
-		WithStatus(rte.TxStatusFailed).
-		WithPagination(10, 0)
+	filter := &rte.StoreTxFilter{
+		Status: []rte.TxStatus{rte.TxStatusFailed},
+		Limit:  10,
+		Offset: 0,
+	}
 
 	// Count query
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM rte_transactions WHERE status IN").
@@ -1184,6 +1185,375 @@ func TestMySQLStore_MarkIdempotency_ExecError(t *testing.T) {
 	}
 }
 
+// ============================================================================
+// stringSlice Tests
+// ============================================================================
+
+func TestStringSlice_Value(t *testing.T) {
+	t.Run("nil slice returns empty JSON array", func(t *testing.T) {
+		var s stringSlice
+		val, err := s.Value()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if val != "[]" {
+			t.Errorf("expected '[]', got %v", val)
+		}
+	})
+
+	t.Run("empty slice marshals to JSON array", func(t *testing.T) {
+		s := stringSlice{}
+		val, err := s.Value()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// json.Marshal of empty non-nil slice produces "[]"
+		if string(val.([]byte)) != "[]" {
+			t.Errorf("expected '[]', got %s", val)
+		}
+	})
+
+	t.Run("slice with data marshals correctly", func(t *testing.T) {
+		s := stringSlice{"a", "b", "c"}
+		val, err := s.Value()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if string(val.([]byte)) != `["a","b","c"]` {
+			t.Errorf("expected '[\"a\",\"b\",\"c\"]', got %s", val)
+		}
+	})
+}
+
+func TestStringSlice_Scan(t *testing.T) {
+	t.Run("nil value sets slice to nil", func(t *testing.T) {
+		var s stringSlice
+		if err := s.Scan(nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if s != nil {
+			t.Errorf("expected nil, got %v", s)
+		}
+	})
+
+	t.Run("valid JSON bytes scans correctly", func(t *testing.T) {
+		var s stringSlice
+		if err := s.Scan([]byte(`["x","y"]`)); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(s) != 2 || s[0] != "x" || s[1] != "y" {
+			t.Errorf("unexpected slice: %v", s)
+		}
+	})
+
+	t.Run("valid JSON string scans correctly", func(t *testing.T) {
+		var s stringSlice
+		if err := s.Scan(`["p","q"]`); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(s) != 2 || s[0] != "p" || s[1] != "q" {
+			t.Errorf("unexpected slice: %v", s)
+		}
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		var s stringSlice
+		if err := s.Scan([]byte(`not json`)); err == nil {
+			t.Error("expected error for invalid JSON, got nil")
+		}
+	})
+
+	t.Run("unsupported type returns error", func(t *testing.T) {
+		var s stringSlice
+		if err := s.Scan(42); err == nil {
+			t.Error("expected error for unsupported type, got nil")
+		}
+	})
+}
+
+// ============================================================================
+// contextJSON Tests
+// ============================================================================
+
+func TestContextJSON_Value(t *testing.T) {
+	t.Run("nil pointer returns empty JSON object string", func(t *testing.T) {
+		var c *contextJSON
+		val, err := c.Value()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if val != "{}" {
+			t.Errorf("expected '{}', got %v", val)
+		}
+	})
+
+	t.Run("non-nil pointer marshals correctly", func(t *testing.T) {
+		c := &contextJSON{
+			TxID:   "tx-abc",
+			TxType: "transfer",
+		}
+		val, err := c.Value()
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		b, ok := val.([]byte)
+		if !ok {
+			t.Fatalf("expected []byte, got %T", val)
+		}
+		if len(b) == 0 {
+			t.Error("expected non-empty JSON bytes")
+		}
+	})
+}
+
+func TestContextJSON_Scan(t *testing.T) {
+	t.Run("nil value is a no-op", func(t *testing.T) {
+		c := &contextJSON{TxID: "original"}
+		if err := c.Scan(nil); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// TxID should be unchanged
+		if c.TxID != "original" {
+			t.Errorf("expected TxID 'original', got '%s'", c.TxID)
+		}
+	})
+
+	t.Run("valid JSON bytes scans correctly", func(t *testing.T) {
+		c := &contextJSON{}
+		if err := c.Scan([]byte(`{"tx_id":"tx-1","tx_type":"pay","step_index":2}`)); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.TxID != "tx-1" || c.TxType != "pay" || c.StepIndex != 2 {
+			t.Errorf("unexpected contextJSON: %+v", c)
+		}
+	})
+
+	t.Run("valid JSON string scans correctly", func(t *testing.T) {
+		c := &contextJSON{}
+		if err := c.Scan(`{"tx_id":"tx-2","tx_type":"refund"}`); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if c.TxID != "tx-2" || c.TxType != "refund" {
+			t.Errorf("unexpected contextJSON: %+v", c)
+		}
+	})
+
+	t.Run("invalid JSON returns error", func(t *testing.T) {
+		c := &contextJSON{}
+		if err := c.Scan([]byte(`not valid json`)); err == nil {
+			t.Error("expected error for invalid JSON, got nil")
+		}
+	})
+
+	t.Run("unsupported type returns error", func(t *testing.T) {
+		c := &contextJSON{}
+		if err := c.Scan(12345); err == nil {
+			t.Error("expected error for unsupported type, got nil")
+		}
+	})
+}
+
+// ============================================================================
+// toStoreTxContext / newContextJSON Tests
+// ============================================================================
+
+func TestToStoreTxContext_Nil(t *testing.T) {
+	var c *contextJSON
+	result := c.toStoreTxContext()
+	if result != nil {
+		t.Errorf("expected nil, got %+v", result)
+	}
+}
+
+func TestToStoreTxContext_NonNil(t *testing.T) {
+	c := &contextJSON{
+		TxID:      "tx-xyz",
+		TxType:    "wire",
+		StepIndex: 3,
+	}
+	result := c.toStoreTxContext()
+	if result == nil {
+		t.Fatal("expected non-nil StoreTxContext")
+	}
+	if result.TxID != "tx-xyz" || result.TxType != "wire" || result.StepIndex != 3 {
+		t.Errorf("unexpected StoreTxContext: %+v", result)
+	}
+}
+
+func TestNewContextJSON_Nil(t *testing.T) {
+	result := newContextJSON(nil)
+	if result == nil {
+		t.Fatal("expected non-nil contextJSON when input is nil")
+	}
+	// Should return zero-value contextJSON
+	if result.TxID != "" || result.TxType != "" {
+		t.Errorf("expected empty contextJSON, got %+v", result)
+	}
+}
+
+func TestNewContextJSON_NonNil(t *testing.T) {
+	ctx := &rte.StoreTxContext{
+		TxID:      "tx-n",
+		TxType:    "batch",
+		StepIndex: 1,
+	}
+	result := newContextJSON(ctx)
+	if result == nil {
+		t.Fatal("expected non-nil contextJSON")
+	}
+	if result.TxID != "tx-n" || result.TxType != "batch" || result.StepIndex != 1 {
+		t.Errorf("unexpected contextJSON: %+v", result)
+	}
+}
+
+// ============================================================================
+// CountTransactionsByStatus Tests
+// ============================================================================
+
+func TestMySQLStore_CountTransactionsByStatus(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	rows := sqlmock.NewRows([]string{"status", "count"}).
+		AddRow(rte.TxStatusCreated, 5).
+		AddRow(rte.TxStatusExecuting, 3).
+		AddRow(rte.TxStatusCompleted, 10)
+
+	mock.ExpectQuery("SELECT status, COUNT\\(\\*\\) FROM rte_transactions GROUP BY status").
+		WillReturnRows(rows)
+
+	result, err := s.CountTransactionsByStatus(context.Background())
+	if err != nil {
+		t.Fatalf("CountTransactionsByStatus failed: %v", err)
+	}
+
+	if result[rte.TxStatusCreated] != 5 {
+		t.Errorf("expected CREATED=5, got %d", result[rte.TxStatusCreated])
+	}
+	if result[rte.TxStatusExecuting] != 3 {
+		t.Errorf("expected EXECUTING=3, got %d", result[rte.TxStatusExecuting])
+	}
+	if result[rte.TxStatusCompleted] != 10 {
+		t.Errorf("expected COMPLETED=10, got %d", result[rte.TxStatusCompleted])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unfulfilled expectations: %v", err)
+	}
+}
+
+func TestMySQLStore_CountTransactionsByStatus_Empty(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	rows := sqlmock.NewRows([]string{"status", "count"})
+	mock.ExpectQuery("SELECT status, COUNT\\(\\*\\) FROM rte_transactions GROUP BY status").
+		WillReturnRows(rows)
+
+	result, err := s.CountTransactionsByStatus(context.Background())
+	if err != nil {
+		t.Fatalf("CountTransactionsByStatus failed: %v", err)
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty map, got %v", result)
+	}
+}
+
+func TestMySQLStore_CountTransactionsByStatus_QueryError(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	mock.ExpectQuery("SELECT status, COUNT\\(\\*\\) FROM rte_transactions GROUP BY status").
+		WillReturnError(errors.New("db error"))
+
+	_, err := s.CountTransactionsByStatus(context.Background())
+	if err == nil {
+		t.Error("expected error, got nil")
+	}
+	if !errors.Is(err, rte.ErrStoreOperationFailed) {
+		t.Errorf("expected ErrStoreOperationFailed, got %v", err)
+	}
+}
+
+// ============================================================================
+// ListTransactions Additional Tests
+// ============================================================================
+
+func TestMySQLStore_ListTransactions_NoFilter(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	filter := &rte.StoreTxFilter{
+		Limit:  20,
+		Offset: 0,
+	}
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM rte_transactions").
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions .+ LIMIT \\? OFFSET \\?").
+		WithArgs(20, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "tx_id", "tx_type", "status", "current_step", "total_steps", "step_names",
+			"lock_keys", "context", "error_msg", "retry_count", "max_retries", "version",
+			"created_at", "updated_at", "locked_at", "completed_at", "timeout_at",
+		}))
+
+	txs, total, err := s.ListTransactions(context.Background(), filter)
+	if err != nil {
+		t.Fatalf("ListTransactions failed: %v", err)
+	}
+	if total != 0 {
+		t.Errorf("expected total 0, got %d", total)
+	}
+	if len(txs) != 0 {
+		t.Errorf("expected 0 transactions, got %d", len(txs))
+	}
+}
+
+func TestMySQLStore_ListTransactions_WithTxTypeAndTimeFilters(t *testing.T) {
+	s, mock, cleanup := newTestStore(t)
+	defer cleanup()
+
+	start := time.Now().Add(-24 * time.Hour)
+	end := time.Now()
+	filter := &rte.StoreTxFilter{
+		TxType:    "transfer",
+		StartTime: start,
+		EndTime:   end,
+		Limit:     5,
+		Offset:    0,
+	}
+
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM rte_transactions WHERE").
+		WithArgs("transfer", start, end).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
+
+	now := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "tx_id", "tx_type", "status", "current_step", "total_steps", "step_names",
+		"lock_keys", "context", "error_msg", "retry_count", "max_retries", "version",
+		"created_at", "updated_at", "locked_at", "completed_at", "timeout_at",
+	}).
+		AddRow(1, "tx-a", "transfer", rte.TxStatusCompleted, 2, 2, `["s1","s2"]`, `[]`, `{}`, "", 0, 3, 1, now, now, nil, &now, nil).
+		AddRow(2, "tx-b", "transfer", rte.TxStatusCompleted, 2, 2, `["s1","s2"]`, `[]`, `{}`, "", 0, 3, 1, now, now, nil, &now, nil)
+
+	mock.ExpectQuery("SELECT .+ FROM rte_transactions .+ LIMIT \\? OFFSET \\?").
+		WithArgs("transfer", start, end, 5, 0).
+		WillReturnRows(rows)
+
+	txs, total, err := s.ListTransactions(context.Background(), filter)
+	if err != nil {
+		t.Fatalf("ListTransactions failed: %v", err)
+	}
+	if total != 2 {
+		t.Errorf("expected total 2, got %d", total)
+	}
+	if len(txs) != 2 {
+		t.Errorf("expected 2 transactions, got %d", len(txs))
+	}
+}
+
 func TestMySQLStore_DeleteExpiredIdempotency_ExecError(t *testing.T) {
 	s, mock, cleanup := newTestStore(t)
 	defer cleanup()
@@ -1218,7 +1588,7 @@ func TestMySQLStore_ListTransactions_CountError(t *testing.T) {
 	s, mock, cleanup := newTestStore(t)
 	defer cleanup()
 
-	filter := store.NewTxFilter().WithPagination(10, 0)
+	filter := &rte.StoreTxFilter{Limit: 10, Offset: 0}
 
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM rte_transactions").
 		WillReturnError(errors.New("database connection error"))

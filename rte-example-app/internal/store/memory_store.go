@@ -232,6 +232,18 @@ func (s *MemoryStore) ListTransactions(ctx context.Context, filter *rte.StoreTxF
 	return result, total, nil
 }
 
+// CountTransactionsByStatus 按状态统计事务数量
+func (s *MemoryStore) CountTransactionsByStatus(ctx context.Context) (map[rte.TxStatus]int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	counts := make(map[rte.TxStatus]int64)
+	for _, tx := range s.txs {
+		counts[tx.Status]++
+	}
+	return counts, nil
+}
+
 // CheckIdempotency 检查幂等性
 func (s *MemoryStore) CheckIdempotency(ctx context.Context, key string) (bool, []byte, error) {
 	s.mu.Lock()

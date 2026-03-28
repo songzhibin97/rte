@@ -215,6 +215,17 @@ func (s *mockStore) DeleteExpiredIdempotency(ctx context.Context) (int64, error)
 	return 0, nil
 }
 
+func (s *mockStore) CountTransactionsByStatus(ctx context.Context) (map[rte.TxStatus]int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	counts := make(map[rte.TxStatus]int64)
+	for _, tx := range s.transactions {
+		counts[tx.Status]++
+	}
+	return counts, nil
+}
+
 // mockLocker implements lock.Locker for testing
 type mockLocker struct {
 	mu    sync.Mutex
@@ -288,6 +299,16 @@ func (b *mockBreaker) Get(service string) circuit.CircuitBreaker {
 
 func (b *mockBreaker) GetWithConfig(service string, config circuit.BreakerConfig) circuit.CircuitBreaker {
 	return b.Get(service)
+}
+
+func (b *mockBreaker) List() []circuit.ServiceBreaker {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	result := make([]circuit.ServiceBreaker, 0, len(b.breakers))
+	for service, cb := range b.breakers {
+		result = append(result, circuit.ServiceBreaker{Service: service, Breaker: cb})
+	}
+	return result
 }
 
 type mockCircuitBreaker struct {
@@ -1486,6 +1507,138 @@ func TestAdmin_CompensateTransaction(t *testing.T) {
 			t.Errorf("expected [step2, step0], got %v", compensationOrder)
 		}
 	})
+}
+
+func TestAdminImpl_CompensateTransaction_StepPanics(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := rte.NewCoordinator(
+		store,
+		rte.WithLocker(locker),
+		rte.WithBreaker(breaker),
+		rte.WithEventBus(eventBus),
+		rte.WithCoordinatorConfig(rte.Config{
+			LockTTL:          30 * time.Second,
+			LockExtendPeriod: 10 * time.Second,
+			StepTimeout:      5 * time.Second,
+			TxTimeout:        30 * time.Second,
+			MaxRetries:       3,
+			RetryInterval:    100 * time.Millisecond,
+			IdempotencyTTL:   24 * time.Hour,
+		}),
+	)
+
+	// Register a step whose Compensate panics
+	panicStep := newTestStep("panic-step")
+	panicStep.supportsComp = true
+	panicStep.compensateFunc = func(ctx context.Context, txCtx *rte.TxContext) error {
+		panic("test panic from compensation")
+	}
+	coord.RegisterStep(panicStep)
+
+	admin := NewAdmin(
+		WithAdminStore(store),
+		WithAdminEventBus(eventBus),
+		WithAdminCoordinator(coord),
+		WithAdminConfig(rte.Config{StepTimeout: 5 * time.Second}),
+	)
+
+	tx := rte.NewStoreTx("tx-panic", "test-type", []string{"panic-step"})
+	tx.Status = rte.TxStatusCompensating
+	tx.CurrentStep = 1
+	tx.Context = &rte.StoreTxContext{
+		TxID:   "tx-panic",
+		TxType: "test-type",
+		Input:  make(map[string]any),
+		Output: make(map[string]any),
+	}
+	store.CreateTransaction(context.Background(), tx)
+
+	stepRecord := rte.NewStoreStepRecord("tx-panic", 0, "panic-step")
+	stepRecord.Status = rte.StepStatusCompleted
+	store.CreateStep(context.Background(), stepRecord)
+
+	txCtx := tx.Context.ToTxContext()
+	_, err := admin.compensateTransaction(context.Background(), tx, txCtx)
+	if err == nil {
+		t.Fatal("expected error from panic, got nil")
+	}
+	if !strings.Contains(err.Error(), "panic") {
+		t.Errorf("expected error to mention panic, got: %v", err)
+	}
+}
+
+func TestAdminImpl_CompensateTransaction_Timeout(t *testing.T) {
+	store := newMockStore()
+	locker := newMockLocker()
+	breaker := newMockBreaker()
+	eventBus := event.NewMemoryEventBus()
+
+	coord := rte.NewCoordinator(
+		store,
+		rte.WithLocker(locker),
+		rte.WithBreaker(breaker),
+		rte.WithEventBus(eventBus),
+		rte.WithCoordinatorConfig(rte.Config{
+			LockTTL:          30 * time.Second,
+			LockExtendPeriod: 10 * time.Second,
+			StepTimeout:      5 * time.Second,
+			TxTimeout:        30 * time.Second,
+			MaxRetries:       3,
+			RetryInterval:    100 * time.Millisecond,
+			IdempotencyTTL:   24 * time.Hour,
+		}),
+	)
+
+	// Register a step that hangs forever
+	hangStep := newTestStep("hang-step")
+	hangStep.supportsComp = true
+	hangStep.compensateFunc = func(ctx context.Context, txCtx *rte.TxContext) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	coord.RegisterStep(hangStep)
+
+	// Use a very short timeout so the test completes quickly
+	admin := NewAdmin(
+		WithAdminStore(store),
+		WithAdminEventBus(eventBus),
+		WithAdminCoordinator(coord),
+		WithAdminConfig(rte.Config{StepTimeout: 50 * time.Millisecond}),
+	)
+
+	tx := rte.NewStoreTx("tx-timeout", "test-type", []string{"hang-step"})
+	tx.Status = rte.TxStatusCompensating
+	tx.CurrentStep = 1
+	tx.Context = &rte.StoreTxContext{
+		TxID:   "tx-timeout",
+		TxType: "test-type",
+		Input:  make(map[string]any),
+		Output: make(map[string]any),
+	}
+	store.CreateTransaction(context.Background(), tx)
+
+	stepRecord := rte.NewStoreStepRecord("tx-timeout", 0, "hang-step")
+	stepRecord.Status = rte.StepStatusCompleted
+	store.CreateStep(context.Background(), stepRecord)
+
+	txCtx := tx.Context.ToTxContext()
+	start := time.Now()
+	_, err := admin.compensateTransaction(context.Background(), tx, txCtx)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("compensation took too long: %v (expected ~50ms)", elapsed)
+	}
+	if !errors.Is(err, rte.ErrStepTimeout) {
+		t.Errorf("expected ErrStepTimeout, got: %v", err)
+	}
 }
 
 // ============================================================================

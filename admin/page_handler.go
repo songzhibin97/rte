@@ -20,11 +20,12 @@ var templatesFS embed.FS
 
 // PageHandlerImpl 页面处理器实现
 type PageHandlerImpl struct {
-	templates  *template.Template
-	admin      *AdminImpl
-	recovery   *recovery.Worker
-	breaker    circuit.Breaker
-	eventStore *EventStore
+	templates       *template.Template
+	templateCache   map[string]*template.Template // pre-built layout+content per page
+	admin           *AdminImpl
+	recovery        *recovery.Worker
+	breaker         circuit.Breaker
+	eventStore      *EventStore
 }
 
 // NewPageHandler 创建页面处理器
@@ -35,12 +36,40 @@ func NewPageHandler(admin *AdminImpl, recovery *recovery.Worker, breaker circuit
 		return nil, fmt.Errorf("failed to load templates: %w", err)
 	}
 
+	// Pre-build a combined (layout + content) template for each content page
+	// so renderTemplate can Clone without re-reading or re-parsing from disk.
+	contentTemplates := []string{
+		"index.html",
+		"transactions.html",
+		"transaction_detail.html",
+		"recovery.html",
+		"circuit_breakers.html",
+		"events.html",
+	}
+
+	cache := make(map[string]*template.Template, len(contentTemplates))
+	for _, name := range contentTemplates {
+		combined, err := templates.Clone()
+		if err != nil {
+			return nil, fmt.Errorf("failed to clone template for %s: %w", name, err)
+		}
+		contentBytes, err := templatesFS.ReadFile("templates/" + name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read template %s: %w", name, err)
+		}
+		if _, err = combined.Parse(string(contentBytes)); err != nil {
+			return nil, fmt.Errorf("failed to parse template %s: %w", name, err)
+		}
+		cache[name] = combined
+	}
+
 	return &PageHandlerImpl{
-		templates:  templates,
-		admin:      admin,
-		recovery:   recovery,
-		breaker:    breaker,
-		eventStore: eventStore,
+		templates:     templates,
+		templateCache: cache,
+		admin:         admin,
+		recovery:      recovery,
+		breaker:       breaker,
+		eventStore:    eventStore,
 	}, nil
 }
 
@@ -99,37 +128,41 @@ func LoadTemplatesFromDir(dir string) (*template.Template, error) {
 func (h *PageHandlerImpl) renderTemplate(w http.ResponseWriter, layoutName, contentName string, data interface{}) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
-	// Clone the template set to avoid conflicts between concurrent requests
-	tmpl, err := h.templates.Clone()
+	// Use pre-built combined template from cache when available.
+	// Clone is still needed to isolate concurrent executions, but avoids
+	// ReadFile + Parse on the hot path.
+	var base *template.Template
+	if h.templateCache != nil {
+		base = h.templateCache[contentName]
+	}
+	if base == nil {
+		// Fallback: build on the fly (e.g. when SetTemplates was called externally)
+		var err error
+		base, err = h.templates.Clone()
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Template clone error: %v", err), http.StatusInternalServerError)
+			return
+		}
+		contentBytes, err := templatesFS.ReadFile("templates/" + contentName)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Failed to read template %s: %v", contentName, err), http.StatusInternalServerError)
+			return
+		}
+		if _, err = base.Parse(string(contentBytes)); err != nil {
+			http.Error(w, fmt.Sprintf("Failed to parse template %s: %v", contentName, err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Clone the pre-built combined template to isolate this request's execution.
+	tmpl, err := base.Clone()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Template clone error: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Parse the content template to get its "content" and "scripts" blocks
-	contentTmpl := h.templates.Lookup(contentName)
-	if contentTmpl == nil {
-		http.Error(w, fmt.Sprintf("Template %s not found", contentName), http.StatusInternalServerError)
-		return
-	}
-
-	// Re-parse the content template into the cloned template set
-	// This ensures the "content" block from this specific template is used
-	contentBytes, err := templatesFS.ReadFile("templates/" + contentName)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to read template %s: %v", contentName, err), http.StatusInternalServerError)
-		return
-	}
-
-	_, err = tmpl.Parse(string(contentBytes))
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to parse template %s: %v", contentName, err), http.StatusInternalServerError)
-		return
-	}
-
 	// Execute the layout template which includes the content
-	err = tmpl.ExecuteTemplate(w, "layout", data)
-	if err != nil {
+	if err = tmpl.ExecuteTemplate(w, "layout", data); err != nil {
 		http.Error(w, fmt.Sprintf("Template execution error: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -285,13 +318,16 @@ func (h *PageHandlerImpl) HandleRecovery(w http.ResponseWriter, r *http.Request)
 
 	if h.recovery != nil {
 		workerStats := h.recovery.Stats()
+		cfg := h.recovery.Config()
 		stats = RecoveryStatsResponse{
 			IsRunning:      workerStats.IsRunning,
 			ScannedCount:   workerStats.ScannedCount,
 			ProcessedCount: workerStats.ProcessedCount,
 			FailedCount:    workerStats.FailedCount,
-			Config:         RecoveryConfigInfo{
-				// Config info will be populated when recovery worker exposes config
+			Config: RecoveryConfigInfo{
+				RecoveryInterval: cfg.RecoveryInterval.String(),
+				StuckThreshold:   cfg.StuckThreshold.String(),
+				MaxRetries:       cfg.MaxRetries,
 			},
 		}
 	}
@@ -304,9 +340,22 @@ func (h *PageHandlerImpl) HandleRecovery(w http.ResponseWriter, r *http.Request)
 func (h *PageHandlerImpl) HandleCircuitBreakers(w http.ResponseWriter, r *http.Request) {
 	var breakers []CircuitBreakerInfo
 
-	// Note: The current Breaker interface doesn't expose a way to list all breakers.
-	// This will need to be enhanced in the circuit breaker implementation.
-	// For now, return an empty list.
+	if h.breaker != nil {
+		serviceBreakers := h.breaker.List()
+		breakers = make([]CircuitBreakerInfo, 0, len(serviceBreakers))
+		for _, sb := range serviceBreakers {
+			counts := sb.Breaker.Counts()
+			breakers = append(breakers, CircuitBreakerInfo{
+				Service:              sb.Service,
+				State:                sb.Breaker.State().String(),
+				Requests:             counts.Requests,
+				TotalSuccesses:       counts.TotalSuccesses,
+				TotalFailures:        counts.TotalFailures,
+				ConsecutiveSuccesses: counts.ConsecutiveSuccesses,
+				ConsecutiveFailures:  counts.ConsecutiveFailures,
+			})
+		}
+	}
 
 	data := NewCircuitBreakersPageData(breakers)
 	h.renderTemplate(w, "layout.html", "circuit_breakers.html", data)
@@ -363,8 +412,10 @@ func (h *PageHandlerImpl) parseEventFilterFromQuery(r *http.Request) EventFilter
 }
 
 // SetTemplates 设置模板（用于测试或自定义模板）
+// Clears the pre-built cache so renderTemplate falls back to the provided templates.
 func (h *PageHandlerImpl) SetTemplates(templates *template.Template) {
 	h.templates = templates
+	h.templateCache = nil
 }
 
 // GetTemplates 获取模板

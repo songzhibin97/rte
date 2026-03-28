@@ -26,6 +26,7 @@ type TxStore interface {
 
 	// Admin queries
 	ListTransactions(ctx context.Context, filter *StoreTxFilter) ([]*StoreTx, int64, error)
+	CountTransactionsByStatus(ctx context.Context) (map[TxStatus]int64, error)
 
 	// Idempotency operations
 	CheckIdempotency(ctx context.Context, key string) (exists bool, result []byte, err error)

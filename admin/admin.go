@@ -5,6 +5,7 @@ package admin
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"rte"
@@ -154,6 +155,9 @@ func (a *AdminImpl) ListTransactions(ctx context.Context, filter *rte.StoreTxFil
 	if filter.Limit <= 0 {
 		filter.Limit = 100
 	}
+	if filter.Limit > 1000 {
+		filter.Limit = 1000
+	}
 
 	transactions, total, err := a.store.ListTransactions(ctx, filter)
 	if err != nil {
@@ -272,7 +276,10 @@ func (a *AdminImpl) ForceCancel(ctx context.Context, txID string, reason string)
 	// Check if compensation is needed (if any steps were completed)
 	needsCompensation := false
 	if tx.CurrentStep > 0 && a.coordinator != nil {
-		steps, _ := a.store.GetSteps(ctx, txID)
+		steps, err := a.store.GetSteps(ctx, txID)
+		if err != nil {
+			return fmt.Errorf("failed to get steps: %w", err)
+		}
 		for _, step := range steps {
 			if step.Status == rte.StepStatusCompleted {
 				stepImpl := a.coordinator.GetStep(step.StepName)
@@ -285,7 +292,18 @@ func (a *AdminImpl) ForceCancel(ctx context.Context, txID string, reason string)
 	}
 
 	if needsCompensation && a.coordinator != nil {
-		// Trigger compensation
+		// Only states that can legally transition to COMPENSATING should go through compensation.
+		// CREATED/LOCKED cannot transition to COMPENSATING per state machine rules;
+		// for those states, transition to FAILED first.
+		if !rte.ValidateTxTransition(tx.Status, rte.TxStatusCompensating) {
+			tx.Status = rte.TxStatusFailed
+			tx.ErrorMsg = fmt.Sprintf("force cancelled: %s", reason)
+			tx.IncrementVersion()
+			if err := a.store.UpdateTransaction(ctx, tx); err != nil {
+				return fmt.Errorf("failed to update transaction: %w", err)
+			}
+		}
+		// Now transition to COMPENSATING
 		tx.Status = rte.TxStatusCompensating
 		tx.ErrorMsg = fmt.Sprintf("force cancelled: %s", reason)
 		tx.IncrementVersion()
@@ -333,6 +351,46 @@ func canForceCancel(status rte.TxStatus) bool {
 	}
 }
 
+// executeCompensationStep executes a single compensation step with timeout and panic recovery.
+// It uses context.Background() as the base to ensure compensation is not cancelled by the
+// caller's context (e.g., an HTTP request that may disconnect), but applies a timeout to
+// prevent infinite hangs.
+func (a *AdminImpl) executeCompensationStep(ctx context.Context, step rte.Step, txCtx *rte.TxContext) error {
+	const defaultCompensationTimeout = 30 * time.Second
+
+	timeout := defaultCompensationTimeout
+	if a.config.StepTimeout > 0 {
+		timeout = a.config.StepTimeout
+	}
+	if stepCfg := step.Config(); stepCfg != nil && stepCfg.Timeout > 0 {
+		timeout = stepCfg.Timeout
+	}
+
+	// Use background context so compensation is not cancelled by a disconnected HTTP client.
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("compensation panic: %v", r)
+			}
+		}()
+		done <- step.Compensate(timeoutCtx, txCtx)
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-timeoutCtx.Done():
+		if timeoutCtx.Err() == context.DeadlineExceeded {
+			return rte.ErrStepTimeout
+		}
+		return timeoutCtx.Err()
+	}
+}
+
 // compensateTransaction performs compensation for a transaction.
 func (a *AdminImpl) compensateTransaction(ctx context.Context, tx *rte.StoreTx, txCtx *rte.TxContext) (*rte.StoreTx, error) {
 	// Get all steps
@@ -362,21 +420,27 @@ func (a *AdminImpl) compensateTransaction(ctx context.Context, tx *rte.StoreTx, 
 
 		// Update step status to COMPENSATING
 		step.Status = rte.StepStatusCompensating
-		a.store.UpdateStep(ctx, step)
+		if err := a.store.UpdateStep(ctx, step); err != nil {
+			log.Printf("admin: failed to update step %d (%s) to COMPENSATING: %v", step.StepIndex, step.StepName, err)
+		}
 
-		// Execute compensation
+		// Execute compensation with timeout and panic recovery
 		txCtx.StepIndex = step.StepIndex
-		compErr := stepImpl.Compensate(ctx, txCtx)
+		compErr := a.executeCompensationStep(ctx, stepImpl, txCtx)
 		if compErr != nil {
 			// Compensation failed
 			step.Status = rte.StepStatusFailed
 			step.ErrorMsg = compErr.Error()
-			a.store.UpdateStep(ctx, step)
+			if err := a.store.UpdateStep(ctx, step); err != nil {
+				log.Printf("admin: failed to update step %d (%s) to FAILED: %v", step.StepIndex, step.StepName, err)
+			}
 
 			tx.Status = rte.TxStatusCompensationFailed
 			tx.ErrorMsg = fmt.Sprintf("compensation failed at step %d (%s): %v", i, step.StepName, compErr)
 			tx.IncrementVersion()
-			a.store.UpdateTransaction(ctx, tx)
+			if err := a.store.UpdateTransaction(ctx, tx); err != nil {
+				log.Printf("admin: failed to update transaction %s to COMPENSATION_FAILED: %v", tx.TxID, err)
+			}
 
 			if a.events != nil {
 				a.events.Publish(ctx, event.NewEvent(event.EventTxCompensationFailed).
@@ -390,7 +454,9 @@ func (a *AdminImpl) compensateTransaction(ctx context.Context, tx *rte.StoreTx, 
 
 		// Update step status to COMPENSATED
 		step.Status = rte.StepStatusCompensated
-		a.store.UpdateStep(ctx, step)
+		if err := a.store.UpdateStep(ctx, step); err != nil {
+			log.Printf("admin: failed to update step %d (%s) to COMPENSATED: %v", step.StepIndex, step.StepName, err)
+		}
 	}
 
 	// Update transaction status to COMPENSATED
@@ -459,65 +525,38 @@ func (a *AdminImpl) GetStats(ctx context.Context) (*EngineStats, error) {
 		CircuitBreakerStats: make(map[string]circuit.BreakerCounts),
 	}
 
-	// Get transaction counts by status
-	// Total transactions
-	allTxs, total, err := a.store.ListTransactions(ctx, &rte.StoreTxFilter{Limit: 1})
+	// Get transaction counts by status using a single query
+	countsByStatus, err := a.store.CountTransactionsByStatus(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get total transactions: %w", err)
+		return nil, fmt.Errorf("failed to get transaction counts by status: %w", err)
 	}
-	_ = allTxs // We only need the total count
-	stats.TotalTransactions = total
 
-	// Pending transactions (CREATED, LOCKED, EXECUTING, CONFIRMING)
-	pendingStatuses := []rte.TxStatus{
+	// Aggregate counts from the status map
+	for _, count := range countsByStatus {
+		stats.TotalTransactions += count
+	}
+
+	// Pending: CREATED + LOCKED + EXECUTING + CONFIRMING
+	for _, s := range []rte.TxStatus{
 		rte.TxStatusCreated,
 		rte.TxStatusLocked,
 		rte.TxStatusExecuting,
 		rte.TxStatusConfirming,
+	} {
+		stats.PendingTransactions += countsByStatus[s]
 	}
-	_, pendingCount, err := a.store.ListTransactions(ctx, &rte.StoreTxFilter{
-		Status: pendingStatuses,
-		Limit:  1,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get pending transactions: %w", err)
-	}
-	stats.PendingTransactions = pendingCount
 
-	// Failed transactions
-	failedStatuses := []rte.TxStatus{
+	// Failed: FAILED + COMPENSATION_FAILED + TIMEOUT
+	for _, s := range []rte.TxStatus{
 		rte.TxStatusFailed,
 		rte.TxStatusCompensationFailed,
 		rte.TxStatusTimeout,
+	} {
+		stats.FailedTransactions += countsByStatus[s]
 	}
-	_, failedCount, err := a.store.ListTransactions(ctx, &rte.StoreTxFilter{
-		Status: failedStatuses,
-		Limit:  1,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get failed transactions: %w", err)
-	}
-	stats.FailedTransactions = failedCount
 
-	// Completed transactions
-	_, completedCount, err := a.store.ListTransactions(ctx, &rte.StoreTxFilter{
-		Status: []rte.TxStatus{rte.TxStatusCompleted},
-		Limit:  1,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get completed transactions: %w", err)
-	}
-	stats.CompletedTransactions = completedCount
-
-	// Compensated transactions
-	_, compensatedCount, err := a.store.ListTransactions(ctx, &rte.StoreTxFilter{
-		Status: []rte.TxStatus{rte.TxStatusCompensated},
-		Limit:  1,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get compensated transactions: %w", err)
-	}
-	stats.CompensatedTransactions = compensatedCount
+	stats.CompletedTransactions = countsByStatus[rte.TxStatusCompleted]
+	stats.CompensatedTransactions = countsByStatus[rte.TxStatusCompensated]
 
 	return stats, nil
 }

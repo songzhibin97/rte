@@ -4,7 +4,6 @@ package admin
 import (
 	"context"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"rte/event"
@@ -60,7 +59,8 @@ func (s *EventStore) Store(e event.Event) {
 	defer s.mu.Unlock()
 
 	// 生成唯一ID
-	id := atomic.AddInt64(&s.nextID, 1)
+	s.nextID++
+	id := s.nextID
 
 	// 转换错误信息
 	var errorMsg string

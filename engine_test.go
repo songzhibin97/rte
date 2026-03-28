@@ -517,21 +517,21 @@ func TestEngine_SubscribeWithNilEventBus(t *testing.T) {
 	// Engine without event bus
 	engine := NewEngine(newMockStore())
 
-	// Subscribe should not panic
+	// Subscribe should return an error when event bus is not configured
 	err := engine.Subscribe(event.EventTxCreated, func(ctx context.Context, e event.Event) error {
 		return nil
 	})
 
-	if err != nil {
-		t.Errorf("expected nil error, got %v", err)
+	if err == nil {
+		t.Error("expected error when event bus is not configured, got nil")
 	}
 
 	err = engine.SubscribeAll(func(ctx context.Context, e event.Event) error {
 		return nil
 	})
 
-	if err != nil {
-		t.Errorf("expected nil error, got %v", err)
+	if err == nil {
+		t.Error("expected error when event bus is not configured, got nil")
 	}
 }
 
@@ -756,6 +756,16 @@ func (b *engineMockBreaker) Get(service string) circuit.CircuitBreaker {
 
 func (b *engineMockBreaker) GetWithConfig(service string, config circuit.BreakerConfig) circuit.CircuitBreaker {
 	return b.Get(service)
+}
+
+func (b *engineMockBreaker) List() []circuit.ServiceBreaker {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	result := make([]circuit.ServiceBreaker, 0, len(b.breakers))
+	for service, cb := range b.breakers {
+		result = append(result, circuit.ServiceBreaker{Service: service, Breaker: cb})
+	}
+	return result
 }
 
 type engineMockCircuitBreaker struct {

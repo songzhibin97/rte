@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"math/rand/v2"
 	"sync"
 	"time"
@@ -169,7 +170,9 @@ func (c *Coordinator) Execute(ctx context.Context, tx *Transaction) (*TxResult, 
 	defer stopExtend()
 
 	// Update status to LOCKED
-	storeTx.Status = TxStatusLocked
+	if err := c.transitionTx(storeTx, TxStatusLocked); err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	storeTx.LockedAt = &now
 	if err := c.updateTxWithVersion(ctx, storeTx); err != nil {
@@ -272,8 +275,12 @@ func (c *Coordinator) startLockExtender(ctx context.Context, handle lock.LockHan
 
 // executeSteps executes all steps in the transaction.
 func (c *Coordinator) executeSteps(ctx context.Context, tx *StoreTx, txCtx *TxContext) (map[string]any, error) {
-	// Update status to EXECUTING
-	tx.Status = TxStatusExecuting
+	// Update status to EXECUTING (skip transition if already EXECUTING, e.g. during resume)
+	if tx.Status != TxStatusExecuting {
+		if err := c.transitionTx(tx, TxStatusExecuting); err != nil {
+			return nil, err
+		}
+	}
 	if err := c.updateTxWithVersion(ctx, tx); err != nil {
 		return nil, err
 	}
@@ -317,6 +324,11 @@ func (c *Coordinator) executeStep(ctx context.Context, tx *StoreTx, txCtx *TxCon
 		return fmt.Errorf("failed to get step record: %w", err)
 	}
 
+	// Skip steps that are already in a terminal or non-retryable state (e.g. during resume)
+	if stepRecord.Status == StepStatusCompleted || stepRecord.Status == StepStatusSkipped {
+		return nil
+	}
+
 	// Publish step started event
 	c.publishEvent(ctx, event.NewEvent(event.EventStepStarted).
 		WithTxID(tx.TxID).
@@ -324,7 +336,9 @@ func (c *Coordinator) executeStep(ctx context.Context, tx *StoreTx, txCtx *TxCon
 		WithStepName(stepName))
 
 	// Update step status to EXECUTING
-	stepRecord.Status = StepStatusExecuting
+	if err := c.transitionStep(stepRecord, StepStatusExecuting); err != nil {
+		return err
+	}
 	now := time.Now()
 	stepRecord.StartedAt = &now
 	if err := c.store.UpdateStep(ctx, stepRecord); err != nil {
@@ -349,11 +363,15 @@ func (c *Coordinator) executeStep(ctx context.Context, tx *StoreTx, txCtx *TxCon
 						}
 					}
 				}
-				stepRecord.Status = StepStatusCompleted
+				if err := c.transitionStep(stepRecord, StepStatusCompleted); err != nil {
+					return err
+				}
 				stepRecord.IdempotencyKey = key
 				completedAt := time.Now()
 				stepRecord.CompletedAt = &completedAt
-				c.store.UpdateStep(ctx, stepRecord)
+				if err := c.store.UpdateStep(ctx, stepRecord); err != nil {
+					log.Printf("[rte] failed to update step %s status for tx %s: %v", stepRecord.StepName, tx.TxID, err)
+				}
 
 				c.publishEvent(ctx, event.NewEvent(event.EventStepCompleted).
 					WithTxID(tx.TxID).
@@ -378,9 +396,13 @@ func (c *Coordinator) executeStep(ctx context.Context, tx *StoreTx, txCtx *TxCon
 
 	if execErr != nil {
 		// Step failed
-		stepRecord.Status = StepStatusFailed
+		if err := c.transitionStep(stepRecord, StepStatusFailed); err != nil {
+			return err
+		}
 		stepRecord.ErrorMsg = execErr.Error()
-		c.store.UpdateStep(ctx, stepRecord)
+		if err := c.store.UpdateStep(ctx, stepRecord); err != nil {
+			log.Printf("[rte] failed to update step %s status for tx %s: %v", stepRecord.StepName, tx.TxID, err)
+		}
 
 		c.publishEvent(ctx, event.NewEvent(event.EventStepFailed).
 			WithTxID(tx.TxID).
@@ -393,13 +415,22 @@ func (c *Coordinator) executeStep(ctx context.Context, tx *StoreTx, txCtx *TxCon
 
 	// Mark idempotency
 	if step.SupportsIdempotency() && c.checker != nil && stepRecord.IdempotencyKey != "" {
-		output, _ := json.Marshal(txCtx.Output)
+		output, marshalErr := json.Marshal(txCtx.Output)
+		if marshalErr != nil {
+			log.Printf("[rte] failed to marshal output for idempotency mark in tx %s: %v", tx.TxID, marshalErr)
+		}
 		c.checker.Mark(ctx, stepRecord.IdempotencyKey, output, c.config.IdempotencyTTL)
 	}
 
 	// Update step status to COMPLETED
-	stepRecord.Status = StepStatusCompleted
-	stepRecord.Output, _ = json.Marshal(txCtx.Output)
+	if err := c.transitionStep(stepRecord, StepStatusCompleted); err != nil {
+		return err
+	}
+	if outputBytes, marshalErr := json.Marshal(txCtx.Output); marshalErr != nil {
+		log.Printf("[rte] failed to marshal step %s output for tx %s: %v", stepRecord.StepName, tx.TxID, marshalErr)
+	} else {
+		stepRecord.Output = outputBytes
+	}
 	completedAt := time.Now()
 	stepRecord.CompletedAt = &completedAt
 	if err := c.store.UpdateStep(ctx, stepRecord); err != nil {
@@ -459,9 +490,13 @@ func (c *Coordinator) executeWithTimeout(ctx context.Context, step Step, txCtx *
 func (c *Coordinator) handleFailure(ctx context.Context, tx *StoreTx, txCtx *TxContext, execErr error, startTime time.Time) (*TxResult, error) {
 	// Check if timeout
 	if execErr == ErrTransactionTimeout || execErr == context.DeadlineExceeded {
-		tx.Status = TxStatusTimeout
+		if err := c.transitionTx(tx, TxStatusTimeout); err != nil {
+			log.Printf("[rte] invalid state transition for tx %s: %v", tx.TxID, err)
+		}
 		tx.ErrorMsg = execErr.Error()
-		c.updateTxWithVersion(ctx, tx)
+		if err := c.updateTxWithVersion(ctx, tx); err != nil {
+			log.Printf("[rte] failed to update tx %s status to timeout: %v", tx.TxID, err)
+		}
 
 		c.publishEvent(ctx, event.NewEvent(event.EventTxTimeout).
 			WithTxID(tx.TxID).
@@ -477,7 +512,9 @@ func (c *Coordinator) handleFailure(ctx context.Context, tx *StoreTx, txCtx *TxC
 	}
 
 	// Update to FAILED status
-	tx.Status = TxStatusFailed
+	if err := c.transitionTx(tx, TxStatusFailed); err != nil {
+		return nil, err
+	}
 	tx.ErrorMsg = execErr.Error()
 	if err := c.updateTxWithVersion(ctx, tx); err != nil {
 		return nil, err
@@ -534,7 +571,9 @@ func (c *Coordinator) needsCompensation(tx *StoreTx) bool {
 // compensate performs compensation for completed steps in reverse order.
 func (c *Coordinator) compensate(ctx context.Context, tx *StoreTx, txCtx *TxContext, failedStepIdx int) error {
 	// Update status to COMPENSATING
-	tx.Status = TxStatusCompensating
+	if err := c.transitionTx(tx, TxStatusCompensating); err != nil {
+		return err
+	}
 	if err := c.updateTxWithVersion(ctx, tx); err != nil {
 		return err
 	}
@@ -564,16 +603,24 @@ func (c *Coordinator) compensate(ctx context.Context, tx *StoreTx, txCtx *TxCont
 		}
 
 		// Update step status to COMPENSATING
-		stepRecord.Status = StepStatusCompensating
-		c.store.UpdateStep(ctx, stepRecord)
+		if err := c.transitionStep(stepRecord, StepStatusCompensating); err != nil {
+			return err
+		}
+		if err := c.store.UpdateStep(ctx, stepRecord); err != nil {
+			log.Printf("[rte] failed to update step %s status for tx %s: %v", stepRecord.StepName, tx.TxID, err)
+		}
 
 		// Execute compensation with retry
 		compErr := c.compensateWithRetry(ctx, step, txCtx, stepRecord)
 		if compErr != nil {
 			// Compensation failed
-			tx.Status = TxStatusCompensationFailed
+			if err := c.transitionTx(tx, TxStatusCompensationFailed); err != nil {
+				log.Printf("[rte] invalid state transition for tx %s: %v", tx.TxID, err)
+			}
 			tx.ErrorMsg = fmt.Sprintf("compensation failed at step %d (%s): %v", i, stepName, compErr)
-			c.updateTxWithVersion(ctx, tx)
+			if err := c.updateTxWithVersion(ctx, tx); err != nil {
+				log.Printf("[rte] failed to update tx %s status to compensation_failed: %v", tx.TxID, err)
+			}
 
 			c.publishEvent(ctx, event.NewEvent(event.EventTxCompensationFailed).
 				WithTxID(tx.TxID).
@@ -590,12 +637,18 @@ func (c *Coordinator) compensate(ctx context.Context, tx *StoreTx, txCtx *TxCont
 		}
 
 		// Update step status to COMPENSATED
-		stepRecord.Status = StepStatusCompensated
-		c.store.UpdateStep(ctx, stepRecord)
+		if err := c.transitionStep(stepRecord, StepStatusCompensated); err != nil {
+			log.Printf("[rte] invalid step state transition for tx %s step %s: %v", tx.TxID, stepRecord.StepName, err)
+		}
+		if err := c.store.UpdateStep(ctx, stepRecord); err != nil {
+			log.Printf("[rte] failed to update step %s status for tx %s: %v", stepRecord.StepName, tx.TxID, err)
+		}
 	}
 
 	// Update transaction status to COMPENSATED
-	tx.Status = TxStatusCompensated
+	if err := c.transitionTx(tx, TxStatusCompensated); err != nil {
+		return err
+	}
 	if err := c.updateTxWithVersion(ctx, tx); err != nil {
 		return err
 	}
@@ -642,7 +695,9 @@ func (c *Coordinator) compensateWithRetry(ctx context.Context, step Step, txCtx 
 
 		lastErr = err
 		stepRecord.RetryCount = attempt + 1
-		c.store.UpdateStep(ctx, stepRecord)
+		if err := c.store.UpdateStep(ctx, stepRecord); err != nil {
+			log.Printf("[rte] failed to update step %s retry count: %v", stepRecord.StepName, err)
+		}
 	}
 
 	return fmt.Errorf("%w: %v", ErrCompensationMaxRetriesExceeded, lastErr)
@@ -716,13 +771,17 @@ func (c *Coordinator) executeCompensationWithTimeout(ctx context.Context, step S
 // confirmTransaction confirms a successful transaction.
 func (c *Coordinator) confirmTransaction(ctx context.Context, tx *StoreTx, txCtx *TxContext, startTime time.Time) (*TxResult, error) {
 	// Update status to CONFIRMING
-	tx.Status = TxStatusConfirming
+	if err := c.transitionTx(tx, TxStatusConfirming); err != nil {
+		return nil, err
+	}
 	if err := c.updateTxWithVersion(ctx, tx); err != nil {
 		return nil, err
 	}
 
 	// Update status to COMPLETED
-	tx.Status = TxStatusCompleted
+	if err := c.transitionTx(tx, TxStatusCompleted); err != nil {
+		return nil, err
+	}
 	now := time.Now()
 	tx.CompletedAt = &now
 	tx.Context = NewStoreTxContext(txCtx)
@@ -742,6 +801,26 @@ func (c *Coordinator) confirmTransaction(ctx context.Context, tx *StoreTx, txCtx
 	}, nil
 }
 
+// transitionTx validates a transaction state transition and updates the status.
+// Returns ErrInvalidTransactionState if the transition is not allowed.
+func (c *Coordinator) transitionTx(tx *StoreTx, newStatus TxStatus) error {
+	if !ValidateTxTransition(tx.Status, newStatus) {
+		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransactionState, tx.Status, newStatus)
+	}
+	tx.Status = newStatus
+	return nil
+}
+
+// transitionStep validates a step state transition and updates the status.
+// Returns ErrInvalidTransactionState if the transition is not allowed.
+func (c *Coordinator) transitionStep(step *StoreStepRecord, newStatus StepStatus) error {
+	if !ValidateStepTransition(step.Status, newStatus) {
+		return fmt.Errorf("%w: step %s: %s -> %s", ErrInvalidTransactionState, step.StepName, step.Status, newStatus)
+	}
+	step.Status = newStatus
+	return nil
+}
+
 // updateTxWithVersion updates a transaction with optimistic locking.
 func (c *Coordinator) updateTxWithVersion(ctx context.Context, tx *StoreTx) error {
 	tx.IncrementVersion()
@@ -755,7 +834,9 @@ func (c *Coordinator) updateTxWithVersion(ctx context.Context, tx *StoreTx) erro
 func (c *Coordinator) failTransaction(ctx context.Context, tx *StoreTx, err error) {
 	tx.Status = TxStatusFailed
 	tx.ErrorMsg = err.Error()
-	c.updateTxWithVersion(ctx, tx)
+	if updateErr := c.updateTxWithVersion(ctx, tx); updateErr != nil {
+		log.Printf("[rte] failed to update tx %s status to failed: %v", tx.TxID, updateErr)
+	}
 
 	c.publishEvent(ctx, event.NewEvent(event.EventTxFailed).
 		WithTxID(tx.TxID).
@@ -775,6 +856,19 @@ func (c *Coordinator) publishEvent(ctx context.Context, e event.Event) {
 func (c *Coordinator) Resume(ctx context.Context, tx *StoreTx) (*TxResult, error) {
 	startTime := time.Now()
 
+	// Acquire locks if needed
+	if c.locker != nil && len(tx.LockKeys) > 0 {
+		lockHandle, err := c.locker.Acquire(ctx, tx.LockKeys, c.config.LockTTL)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrLockAcquisitionFailed, err)
+		}
+		defer lockHandle.Release(ctx)
+
+		// Start lock extender to prevent expiry during long execution
+		stopExtend := c.startLockExtender(ctx, lockHandle, tx)
+		defer stopExtend()
+	}
+
 	// Reload transaction context
 	txCtx := tx.Context.ToTxContext()
 
@@ -791,8 +885,10 @@ func (c *Coordinator) Resume(ctx context.Context, tx *StoreTx) (*TxResult, error
 		// Check if can retry
 		if tx.CanRetry() {
 			tx.RetryCount++
-			tx.Status = TxStatusExecuting
 			tx.ErrorMsg = ""
+			if err := c.transitionTx(tx, TxStatusExecuting); err != nil {
+				return nil, err
+			}
 			if err := c.updateTxWithVersion(ctx, tx); err != nil {
 				return nil, err
 			}

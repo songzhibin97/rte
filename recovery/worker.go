@@ -13,39 +13,9 @@ import (
 	"rte/lock"
 )
 
-// StoreTx represents a transaction record for storage.
-// This is a simplified version to avoid circular imports.
-type StoreTx struct {
-	ID          int64
-	TxID        string
-	TxType      string
-	Status      string
-	CurrentStep int
-	TotalSteps  int
-	StepNames   []string
-	LockKeys    []string
-	ErrorMsg    string
-	RetryCount  int
-	MaxRetries  int
-	Version     int
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	LockedAt    *time.Time
-	CompletedAt *time.Time
-	TimeoutAt   *time.Time
-}
-
-// TxStore defines the storage interface needed by the recovery worker.
-type TxStore interface {
-	GetTransaction(ctx context.Context, txID string) (*StoreTx, error)
-	UpdateTransaction(ctx context.Context, tx *StoreTx) error
-	GetStuckTransactions(ctx context.Context, olderThan time.Duration) ([]*StoreTx, error)
-	GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*StoreTx, error)
-}
-
 // Coordinator defines the interface for resuming transactions.
 type Coordinator interface {
-	Resume(ctx context.Context, txID string) error
+	Resume(ctx context.Context, tx *rte.StoreTx) (*rte.TxResult, error)
 }
 
 // Config holds the configuration for the recovery worker.
@@ -85,7 +55,7 @@ func (l *defaultLogger) Printf(format string, v ...any) {
 // Worker is the recovery worker that handles stuck and failed transactions.
 // It periodically scans for transactions that need recovery and processes them.
 type Worker struct {
-	store       TxStore
+	store       rte.TxStore
 	locker      lock.Locker
 	coordinator Coordinator
 	events      event.EventBus
@@ -109,7 +79,7 @@ type Worker struct {
 type WorkerOption func(*Worker)
 
 // WithStore sets the store for the worker.
-func WithStore(s TxStore) WorkerOption {
+func WithStore(s rte.TxStore) WorkerOption {
 	return func(w *Worker) {
 		w.store = s
 	}
@@ -163,6 +133,11 @@ func NewWorker(opts ...WorkerOption) *Worker {
 	}
 
 	return w
+}
+
+// Config returns the current configuration of the worker (read-only).
+func (w *Worker) Config() Config {
+	return w.config
 }
 
 // Start starts the recovery worker.
@@ -257,7 +232,7 @@ func (w *Worker) scan(ctx context.Context) {
 }
 
 // recoverTransaction attempts to recover a stuck transaction.
-func (w *Worker) recoverTransaction(ctx context.Context, tx *StoreTx) {
+func (w *Worker) recoverTransaction(ctx context.Context, tx *rte.StoreTx) {
 	// Acquire distributed lock to prevent concurrent recovery
 	lockKey := fmt.Sprintf("recovery:%s", tx.TxID)
 	handle, err := w.locker.Acquire(ctx, []string{lockKey}, w.config.LockTTL)
@@ -268,6 +243,10 @@ func (w *Worker) recoverTransaction(ctx context.Context, tx *StoreTx) {
 	}
 	defer handle.Release(ctx)
 
+	// Start lock extender to prevent expiry during long recovery
+	stopExtend := w.startLockExtender(ctx, handle)
+	defer stopExtend()
+
 	// Reload transaction state to ensure it still needs recovery
 	currentTx, err := w.store.GetTransaction(ctx, tx.TxID)
 	if err != nil {
@@ -277,7 +256,7 @@ func (w *Worker) recoverTransaction(ctx context.Context, tx *StoreTx) {
 
 	// Check if transaction still needs recovery
 	// Only recover LOCKED or EXECUTING transactions
-	if rte.TxStatus(currentTx.Status) != rte.TxStatusLocked && rte.TxStatus(currentTx.Status) != rte.TxStatusExecuting {
+	if currentTx.Status != rte.TxStatusLocked && currentTx.Status != rte.TxStatusExecuting {
 		w.logger.Printf("tx %s no longer needs recovery (status=%s)", tx.TxID, currentTx.Status)
 		return
 	}
@@ -285,7 +264,7 @@ func (w *Worker) recoverTransaction(ctx context.Context, tx *StoreTx) {
 	w.logger.Printf("recovering stuck tx %s (status=%s, stuck since %v)", tx.TxID, currentTx.Status, currentTx.UpdatedAt)
 
 	// Resume the transaction
-	err = w.coordinator.Resume(ctx, tx.TxID)
+	result, err := w.coordinator.Resume(ctx, currentTx)
 	if err != nil {
 		w.logger.Printf("failed to recover tx %s: %v", tx.TxID, err)
 		w.incrementFailed()
@@ -298,11 +277,15 @@ func (w *Worker) recoverTransaction(ctx context.Context, tx *StoreTx) {
 	}
 
 	w.incrementProcessed()
-	w.logger.Printf("successfully recovered tx %s", tx.TxID)
+	if result != nil {
+		w.logger.Printf("successfully recovered tx %s (result status=%s)", tx.TxID, result.Status)
+	} else {
+		w.logger.Printf("successfully recovered tx %s", tx.TxID)
+	}
 }
 
 // retryTransaction attempts to retry a failed transaction.
-func (w *Worker) retryTransaction(ctx context.Context, tx *StoreTx) {
+func (w *Worker) retryTransaction(ctx context.Context, tx *rte.StoreTx) {
 	// Acquire distributed lock to prevent concurrent retry
 	lockKey := fmt.Sprintf("recovery:%s", tx.TxID)
 	handle, err := w.locker.Acquire(ctx, []string{lockKey}, w.config.LockTTL)
@@ -312,6 +295,10 @@ func (w *Worker) retryTransaction(ctx context.Context, tx *StoreTx) {
 	}
 	defer handle.Release(ctx)
 
+	// Start lock extender to prevent expiry during long retry
+	stopExtend := w.startLockExtender(ctx, handle)
+	defer stopExtend()
+
 	// Reload transaction state
 	currentTx, err := w.store.GetTransaction(ctx, tx.TxID)
 	if err != nil {
@@ -320,7 +307,7 @@ func (w *Worker) retryTransaction(ctx context.Context, tx *StoreTx) {
 	}
 
 	// Check if transaction still needs retry
-	if rte.TxStatus(currentTx.Status) != rte.TxStatusFailed {
+	if currentTx.Status != rte.TxStatusFailed {
 		return
 	}
 
@@ -340,7 +327,7 @@ func (w *Worker) retryTransaction(ctx context.Context, tx *StoreTx) {
 	w.logger.Printf("retrying failed tx %s (attempt %d/%d)", tx.TxID, currentTx.RetryCount+1, currentTx.MaxRetries)
 
 	// Resume the transaction (coordinator will handle retry logic)
-	err = w.coordinator.Resume(ctx, tx.TxID)
+	result, err := w.coordinator.Resume(ctx, currentTx)
 	if err != nil {
 		w.logger.Printf("failed to retry tx %s: %v", tx.TxID, err)
 		w.incrementFailed()
@@ -348,7 +335,42 @@ func (w *Worker) retryTransaction(ctx context.Context, tx *StoreTx) {
 	}
 
 	w.incrementProcessed()
-	w.logger.Printf("successfully retried tx %s", tx.TxID)
+	if result != nil {
+		w.logger.Printf("successfully retried tx %s (result status=%s)", tx.TxID, result.Status)
+	} else {
+		w.logger.Printf("successfully retried tx %s", tx.TxID)
+	}
+}
+
+// startLockExtender starts a goroutine that periodically extends the lock TTL.
+// It returns a stop function that must be called (typically via defer) to clean up.
+func (w *Worker) startLockExtender(ctx context.Context, handle lock.LockHandle) func() {
+	ticker := time.NewTicker(w.config.LockTTL / 3)
+	done := make(chan struct{})
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				w.logger.Printf("lock extender panic: %v", r)
+			}
+		}()
+		for {
+			select {
+			case <-ticker.C:
+				if err := handle.Extend(ctx, w.config.LockTTL); err != nil {
+					w.logger.Printf("lock extend failed: %v", err)
+				}
+			case <-done:
+				ticker.Stop()
+				return
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			}
+		}
+	}()
+
+	return func() { close(done) }
 }
 
 // publishEvent publishes an event to the event bus.

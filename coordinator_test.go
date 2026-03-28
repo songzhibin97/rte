@@ -158,6 +158,16 @@ func (s *mockStore) DeleteExpiredIdempotency(ctx context.Context) (int64, error)
 	return 0, nil
 }
 
+func (s *mockStore) CountTransactionsByStatus(ctx context.Context) (map[TxStatus]int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	counts := make(map[TxStatus]int64)
+	for _, tx := range s.transactions {
+		counts[tx.Status]++
+	}
+	return counts, nil
+}
+
 // mockLocker implements lock.Locker for testing
 type mockLocker struct {
 	mu    sync.Mutex
@@ -231,6 +241,16 @@ func (b *mockBreaker) Get(service string) circuit.CircuitBreaker {
 
 func (b *mockBreaker) GetWithConfig(service string, config circuit.BreakerConfig) circuit.CircuitBreaker {
 	return b.Get(service)
+}
+
+func (b *mockBreaker) List() []circuit.ServiceBreaker {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	result := make([]circuit.ServiceBreaker, 0, len(b.breakers))
+	for service, cb := range b.breakers {
+		result = append(result, circuit.ServiceBreaker{Service: service, Breaker: cb})
+	}
+	return result
 }
 
 type mockCircuitBreaker struct {

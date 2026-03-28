@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -218,14 +219,14 @@ func (s *AdminServer) Start() error {
 		return fmt.Errorf("server already running")
 	}
 	s.running = true
-	s.mu.Unlock()
-
 	s.server = &http.Server{
 		Addr:    s.addr,
 		Handler: s.mux,
 	}
+	srv := s.server
+	s.mu.Unlock()
 
-	return s.server.ListenAndServe()
+	return srv.ListenAndServe()
 }
 
 // Stop 停止服务器
@@ -236,10 +237,11 @@ func (s *AdminServer) Stop(ctx context.Context) error {
 		return nil
 	}
 	s.running = false
+	srv := s.server
 	s.mu.Unlock()
 
-	if s.server != nil {
-		return s.server.Shutdown(ctx)
+	if srv != nil {
+		return srv.Shutdown(ctx)
 	}
 	return nil
 }
@@ -294,7 +296,10 @@ const (
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	if err := json.NewEncoder(w).Encode(data); err != nil {
+		// Header already sent; log the error for observability.
+		log.Printf("admin: writeJSON encode error: %v", err)
+	}
 }
 
 // writeSuccess writes a successful JSON response.
@@ -367,7 +372,9 @@ func parseTransactionFilter(r *http.Request) *rte.StoreTxFilter {
 	// Parse status
 	if statuses := r.URL.Query()["status"]; len(statuses) > 0 {
 		for _, s := range statuses {
-			filter.Status = append(filter.Status, rte.TxStatus(s))
+			if isValidTxStatus(rte.TxStatus(s)) {
+				filter.Status = append(filter.Status, rte.TxStatus(s))
+			}
 		}
 	}
 
@@ -399,12 +406,35 @@ func parseTransactionFilter(r *http.Request) *rte.StoreTxFilter {
 	if pageSize := r.URL.Query().Get("page_size"); pageSize != "" {
 		var ps int
 		fmt.Sscanf(pageSize, "%d", &ps)
-		if ps > 0 && ps <= 100 {
+		if ps > 0 {
 			filter.Limit = ps
 		}
 	}
+	if filter.Limit > 1000 {
+		filter.Limit = 1000
+	}
 
 	return filter
+}
+
+// isValidTxStatus returns true if s is a known transaction status value.
+func isValidTxStatus(s rte.TxStatus) bool {
+	switch s {
+	case rte.TxStatusCreated,
+		rte.TxStatusLocked,
+		rte.TxStatusExecuting,
+		rte.TxStatusConfirming,
+		rte.TxStatusCompleted,
+		rte.TxStatusFailed,
+		rte.TxStatusCompensating,
+		rte.TxStatusCompensated,
+		rte.TxStatusCompensationFailed,
+		rte.TxStatusCancelled,
+		rte.TxStatusTimeout:
+		return true
+	default:
+		return false
+	}
 }
 
 // HandleGetTransaction GET /api/transactions/{txID}
@@ -488,10 +518,14 @@ func convertToStepDetail(step *rte.StoreStepRecord) StepDetail {
 
 	// Parse input/output from JSON
 	if len(step.Input) > 0 {
-		json.Unmarshal(step.Input, &detail.Input)
+		if err := json.Unmarshal(step.Input, &detail.Input); err != nil {
+			log.Printf("admin: failed to unmarshal step %d input: %v", step.StepIndex, err)
+		}
 	}
 	if len(step.Output) > 0 {
-		json.Unmarshal(step.Output, &detail.Output)
+		if err := json.Unmarshal(step.Output, &detail.Output); err != nil {
+			log.Printf("admin: failed to unmarshal step %d output: %v", step.StepIndex, err)
+		}
 	}
 
 	return detail
@@ -511,6 +545,7 @@ func (h *APIHandler) HandleForceComplete(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Parse request body
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req OperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrCodeInvalidRequest, "invalid request body")
@@ -544,6 +579,7 @@ func (h *APIHandler) HandleForceCancel(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse request body
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req OperationRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrCodeInvalidRequest, "invalid request body")
@@ -622,13 +658,16 @@ func (h *APIHandler) HandleGetRecoveryStats(w http.ResponseWriter, r *http.Reque
 
 	stats := h.recovery.Stats()
 
+	cfg := h.recovery.Config()
 	response := RecoveryStatsResponse{
 		IsRunning:      stats.IsRunning,
 		ScannedCount:   stats.ScannedCount,
 		ProcessedCount: stats.ProcessedCount,
 		FailedCount:    stats.FailedCount,
-		Config:         RecoveryConfigInfo{
-			// Config info will be populated when recovery worker exposes config
+		Config: RecoveryConfigInfo{
+			RecoveryInterval: cfg.RecoveryInterval.String(),
+			StuckThreshold:   cfg.StuckThreshold.String(),
+			MaxRetries:       cfg.MaxRetries,
 		},
 	}
 
@@ -642,10 +681,20 @@ func (h *APIHandler) HandleGetCircuitBreakers(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Note: The current Breaker interface doesn't expose a way to list all breakers.
-	// This will need to be enhanced in the circuit breaker implementation.
-	// For now, return an empty list.
-	response := []CircuitBreakerInfo{}
+	serviceBreakers := h.breaker.List()
+	response := make([]CircuitBreakerInfo, 0, len(serviceBreakers))
+	for _, sb := range serviceBreakers {
+		counts := sb.Breaker.Counts()
+		response = append(response, CircuitBreakerInfo{
+			Service:              sb.Service,
+			State:                sb.Breaker.State().String(),
+			Requests:             counts.Requests,
+			TotalSuccesses:       counts.TotalSuccesses,
+			TotalFailures:        counts.TotalFailures,
+			ConsecutiveSuccesses: counts.ConsecutiveSuccesses,
+			ConsecutiveFailures:  counts.ConsecutiveFailures,
+		})
+	}
 
 	writeSuccess(w, response)
 }
@@ -664,6 +713,10 @@ func (h *APIHandler) HandleResetCircuitBreaker(w http.ResponseWriter, r *http.Re
 	}
 
 	cb := h.breaker.Get(service)
+	if cb == nil {
+		writeError(w, http.StatusNotFound, ErrCodeServiceNotFound, fmt.Sprintf("service %s not found", service))
+		return
+	}
 	cb.Reset()
 
 	writeSuccess(w, map[string]string{"message": fmt.Sprintf("熔断器 %s 已重置", service)})

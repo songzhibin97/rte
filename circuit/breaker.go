@@ -64,12 +64,20 @@ type BreakerCounts struct {
 	ConsecutiveFailures int64
 }
 
+// ServiceBreaker pairs a service name with its CircuitBreaker instance
+type ServiceBreaker struct {
+	Service string
+	Breaker CircuitBreaker
+}
+
 // Breaker is the circuit breaker manager interface
 type Breaker interface {
 	// Get returns the circuit breaker for the specified service with default config
 	Get(service string) CircuitBreaker
 	// GetWithConfig returns the circuit breaker for the specified service with custom config
 	GetWithConfig(service string, config BreakerConfig) CircuitBreaker
+	// List returns all registered circuit breakers sorted by service name
+	List() []ServiceBreaker
 }
 
 // CircuitBreaker is the interface for a single circuit breaker

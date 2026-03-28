@@ -2,6 +2,7 @@ package rte
 
 import (
 	"context"
+	"fmt"
 
 	"rte/circuit"
 	"rte/event"
@@ -126,17 +127,19 @@ func (e *Engine) Execute(ctx context.Context, tx *Transaction) (*TxResult, error
 
 // Subscribe subscribes a handler to a specific event type.
 // Multiple handlers can be registered for the same event type.
+// Returns an error if the event bus is not configured.
 func (e *Engine) Subscribe(eventType event.EventType, handler event.EventHandler) error {
 	if e.coordinator.events == nil {
-		return nil
+		return fmt.Errorf("event bus not configured")
 	}
 	return e.coordinator.events.Subscribe(eventType, handler)
 }
 
 // SubscribeAll subscribes a handler to all events.
+// Returns an error if the event bus is not configured.
 func (e *Engine) SubscribeAll(handler event.EventHandler) error {
 	if e.coordinator.events == nil {
-		return nil
+		return fmt.Errorf("event bus not configured")
 	}
 	return e.coordinator.events.SubscribeAll(handler)
 }

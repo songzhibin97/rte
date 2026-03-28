@@ -190,6 +190,14 @@ func (s *demoStore) DeleteExpiredIdempotency(ctx context.Context) (int64, error)
 	return 0, nil
 }
 
+func (s *demoStore) CountTransactionsByStatus(ctx context.Context) (map[rte.TxStatus]int64, error) {
+	counts := make(map[rte.TxStatus]int64)
+	for _, tx := range s.transactions {
+		counts[tx.Status]++
+	}
+	return counts, nil
+}
+
 // addDemoData adds sample data for demonstration
 func addDemoData(store *demoStore, eventStore *admin.EventStore) {
 	now := time.Now()

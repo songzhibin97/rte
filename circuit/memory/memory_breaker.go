@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -33,6 +34,26 @@ func NewMemoryBreakerWithConfig(config circuit.BreakerConfig) *MemoryBreaker {
 // Get returns the circuit breaker for the specified service with default config
 func (m *MemoryBreaker) Get(service string) circuit.CircuitBreaker {
 	return m.GetWithConfig(service, m.defaultConfig)
+}
+
+// List returns all registered circuit breakers sorted by service name
+func (m *MemoryBreaker) List() []circuit.ServiceBreaker {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	result := make([]circuit.ServiceBreaker, 0, len(m.breakers))
+	for service, cb := range m.breakers {
+		result = append(result, circuit.ServiceBreaker{
+			Service: service,
+			Breaker: cb,
+		})
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Service < result[j].Service
+	})
+
+	return result
 }
 
 // GetWithConfig returns the circuit breaker for the specified service with custom config

@@ -35,7 +35,7 @@ func NewTransferService() *TransferService {
 
 	// 创建RTE引擎
 	engine := rte.NewEngine(
-		rte.WithEngineStore(rteStore),
+		rteStore,
 		rte.WithEngineLocker(locker),
 		rte.WithEngineBreaker(breaker),
 		rte.WithEngineEventBus(eventBus),

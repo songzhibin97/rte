@@ -1,19 +1,19 @@
-// Package mysql provides a MySQL implementation of the store.Store interface.
+// Package mysql provides a MySQL implementation of the rte.TxStore interface.
 package mysql
 
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"rte"
-	"rte/store"
 )
 
-// MySQLStore implements the store.Store interface using MySQL.
+// MySQLStore implements the rte.TxStore interface using MySQL.
 type MySQLStore struct {
 	db *sql.DB
 }
@@ -24,11 +24,113 @@ func New(db *sql.DB) *MySQLStore {
 }
 
 // ============================================================================
+// Private serialization types
+// ============================================================================
+
+// stringSlice is a custom type for storing string slices as JSON in the database.
+type stringSlice []string
+
+// Value implements the driver.Valuer interface for database serialization.
+func (s stringSlice) Value() (driver.Value, error) {
+	if s == nil {
+		return "[]", nil
+	}
+	return json.Marshal(s)
+}
+
+// Scan implements the sql.Scanner interface for database deserialization.
+func (s *stringSlice) Scan(value interface{}) error {
+	if value == nil {
+		*s = nil
+		return nil
+	}
+
+	var b []byte
+	switch v := value.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("cannot scan type %T into stringSlice", value)
+	}
+
+	return json.Unmarshal(b, s)
+}
+
+// contextJSON is a wrapper for StoreTxContext that implements database serialization.
+type contextJSON struct {
+	TxID      string            `json:"tx_id"`
+	TxType    string            `json:"tx_type"`
+	StepIndex int               `json:"step_index"`
+	Input     map[string]any    `json:"input"`
+	Output    map[string]any    `json:"output"`
+	Metadata  map[string]string `json:"metadata"`
+}
+
+// Value implements the driver.Valuer interface for database serialization.
+func (c *contextJSON) Value() (driver.Value, error) {
+	if c == nil {
+		return "{}", nil
+	}
+	return json.Marshal(c)
+}
+
+// Scan implements the sql.Scanner interface for database deserialization.
+func (c *contextJSON) Scan(value interface{}) error {
+	if value == nil {
+		return nil
+	}
+
+	var b []byte
+	switch v := value.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	default:
+		return fmt.Errorf("cannot scan type %T into contextJSON", value)
+	}
+
+	return json.Unmarshal(b, c)
+}
+
+// toStoreTxContext converts contextJSON to *rte.StoreTxContext.
+func (c *contextJSON) toStoreTxContext() *rte.StoreTxContext {
+	if c == nil {
+		return nil
+	}
+	return &rte.StoreTxContext{
+		TxID:      c.TxID,
+		TxType:    c.TxType,
+		StepIndex: c.StepIndex,
+		Input:     c.Input,
+		Output:    c.Output,
+		Metadata:  c.Metadata,
+	}
+}
+
+// newContextJSON creates a contextJSON from *rte.StoreTxContext.
+func newContextJSON(ctx *rte.StoreTxContext) *contextJSON {
+	if ctx == nil {
+		return &contextJSON{}
+	}
+	return &contextJSON{
+		TxID:      ctx.TxID,
+		TxType:    ctx.TxType,
+		StepIndex: ctx.StepIndex,
+		Input:     ctx.Input,
+		Output:    ctx.Output,
+		Metadata:  ctx.Metadata,
+	}
+}
+
+// ============================================================================
 // Transaction Operations
 // ============================================================================
 
 // CreateTransaction creates a new transaction record.
-func (s *MySQLStore) CreateTransaction(ctx context.Context, tx *store.Transaction) error {
+func (s *MySQLStore) CreateTransaction(ctx context.Context, tx *rte.StoreTx) error {
 	query := `
 		INSERT INTO rte_transactions (
 			tx_id, tx_type, status, current_step, total_steps, step_names,
@@ -47,14 +149,14 @@ func (s *MySQLStore) CreateTransaction(ctx context.Context, tx *store.Transactio
 		return fmt.Errorf("marshal lock_keys: %w", err)
 	}
 
-	contextJSON, err := json.Marshal(tx.Context)
+	ctxJSON, err := json.Marshal(newContextJSON(tx.Context))
 	if err != nil {
 		return fmt.Errorf("marshal context: %w", err)
 	}
 
 	result, err := s.db.ExecContext(ctx, query,
 		tx.TxID, tx.TxType, tx.Status, tx.CurrentStep, tx.TotalSteps, stepNames,
-		lockKeys, contextJSON, tx.ErrorMsg, tx.RetryCount, tx.MaxRetries, tx.Version,
+		lockKeys, ctxJSON, tx.ErrorMsg, tx.RetryCount, tx.MaxRetries, tx.Version,
 		tx.CreatedAt, tx.UpdatedAt, tx.LockedAt, tx.CompletedAt, tx.TimeoutAt,
 	)
 	if err != nil {
@@ -75,7 +177,7 @@ func (s *MySQLStore) CreateTransaction(ctx context.Context, tx *store.Transactio
 
 // UpdateTransaction updates an existing transaction with optimistic locking.
 // The caller is expected to have already incremented the version before calling this method.
-func (s *MySQLStore) UpdateTransaction(ctx context.Context, tx *store.Transaction) error {
+func (s *MySQLStore) UpdateTransaction(ctx context.Context, tx *rte.StoreTx) error {
 	query := `
 		UPDATE rte_transactions SET
 			status = ?, current_step = ?, context = ?, error_msg = ?,
@@ -84,7 +186,7 @@ func (s *MySQLStore) UpdateTransaction(ctx context.Context, tx *store.Transactio
 		WHERE tx_id = ? AND version = ?
 	`
 
-	contextJSON, err := json.Marshal(tx.Context)
+	ctxJSON, err := json.Marshal(newContextJSON(tx.Context))
 	if err != nil {
 		return fmt.Errorf("marshal context: %w", err)
 	}
@@ -92,7 +194,7 @@ func (s *MySQLStore) UpdateTransaction(ctx context.Context, tx *store.Transactio
 	// The caller has already incremented the version, so we use tx.Version for the new value
 	// and tx.Version-1 for the WHERE clause to match the existing version
 	result, err := s.db.ExecContext(ctx, query,
-		tx.Status, tx.CurrentStep, contextJSON, tx.ErrorMsg,
+		tx.Status, tx.CurrentStep, ctxJSON, tx.ErrorMsg,
 		tx.RetryCount, tx.Version, time.Now(),
 		tx.LockedAt, tx.CompletedAt, tx.TimeoutAt,
 		tx.TxID, tx.Version-1,
@@ -124,7 +226,7 @@ func (s *MySQLStore) UpdateTransaction(ctx context.Context, tx *store.Transactio
 }
 
 // GetTransaction retrieves a transaction by its ID.
-func (s *MySQLStore) GetTransaction(ctx context.Context, txID string) (*store.Transaction, error) {
+func (s *MySQLStore) GetTransaction(ctx context.Context, txID string) (*rte.StoreTx, error) {
 	query := `
 		SELECT id, tx_id, tx_type, status, current_step, total_steps, step_names,
 			lock_keys, context, error_msg, retry_count, max_retries, version,
@@ -133,12 +235,13 @@ func (s *MySQLStore) GetTransaction(ctx context.Context, txID string) (*store.Tr
 		WHERE tx_id = ?
 	`
 
-	tx := &store.Transaction{}
-	var stepNames, lockKeys, contextJSON []byte
+	var stepNames, lockKeys []byte
+	var ctxData contextJSON
+	tx := &rte.StoreTx{}
 
 	err := s.db.QueryRowContext(ctx, query, txID).Scan(
 		&tx.ID, &tx.TxID, &tx.TxType, &tx.Status, &tx.CurrentStep, &tx.TotalSteps, &stepNames,
-		&lockKeys, &contextJSON, &tx.ErrorMsg, &tx.RetryCount, &tx.MaxRetries, &tx.Version,
+		&lockKeys, &ctxData, &tx.ErrorMsg, &tx.RetryCount, &tx.MaxRetries, &tx.Version,
 		&tx.CreatedAt, &tx.UpdatedAt, &tx.LockedAt, &tx.CompletedAt, &tx.TimeoutAt,
 	)
 	if err != nil {
@@ -154,9 +257,7 @@ func (s *MySQLStore) GetTransaction(ctx context.Context, txID string) (*store.Tr
 	if err := json.Unmarshal(lockKeys, &tx.LockKeys); err != nil {
 		return nil, fmt.Errorf("unmarshal lock_keys: %w", err)
 	}
-	if err := json.Unmarshal(contextJSON, &tx.Context); err != nil {
-		return nil, fmt.Errorf("unmarshal context: %w", err)
-	}
+	tx.Context = ctxData.toStoreTxContext()
 
 	return tx, nil
 }
@@ -176,7 +277,7 @@ func (s *MySQLStore) transactionExists(ctx context.Context, txID string) (bool, 
 // ============================================================================
 
 // CreateStep creates a new step record.
-func (s *MySQLStore) CreateStep(ctx context.Context, step *store.StepRecord) error {
+func (s *MySQLStore) CreateStep(ctx context.Context, step *rte.StoreStepRecord) error {
 	query := `
 		INSERT INTO rte_steps (
 			tx_id, step_index, step_name, status, idempotency_key,
@@ -207,7 +308,7 @@ func (s *MySQLStore) CreateStep(ctx context.Context, step *store.StepRecord) err
 }
 
 // UpdateStep updates an existing step record.
-func (s *MySQLStore) UpdateStep(ctx context.Context, step *store.StepRecord) error {
+func (s *MySQLStore) UpdateStep(ctx context.Context, step *rte.StoreStepRecord) error {
 	query := `
 		UPDATE rte_steps SET
 			status = ?, idempotency_key = ?, input = ?, output = ?,
@@ -238,7 +339,7 @@ func (s *MySQLStore) UpdateStep(ctx context.Context, step *store.StepRecord) err
 }
 
 // GetStep retrieves a specific step by transaction ID and step index.
-func (s *MySQLStore) GetStep(ctx context.Context, txID string, stepIndex int) (*store.StepRecord, error) {
+func (s *MySQLStore) GetStep(ctx context.Context, txID string, stepIndex int) (*rte.StoreStepRecord, error) {
 	query := `
 		SELECT id, tx_id, step_index, step_name, status, idempotency_key,
 			input, output, error_msg, retry_count,
@@ -247,7 +348,7 @@ func (s *MySQLStore) GetStep(ctx context.Context, txID string, stepIndex int) (*
 		WHERE tx_id = ? AND step_index = ?
 	`
 
-	step := &store.StepRecord{}
+	step := &rte.StoreStepRecord{}
 	err := s.db.QueryRowContext(ctx, query, txID, stepIndex).Scan(
 		&step.ID, &step.TxID, &step.StepIndex, &step.StepName, &step.Status, &step.IdempotencyKey,
 		&step.Input, &step.Output, &step.ErrorMsg, &step.RetryCount,
@@ -264,7 +365,7 @@ func (s *MySQLStore) GetStep(ctx context.Context, txID string, stepIndex int) (*
 }
 
 // GetSteps retrieves all steps for a transaction.
-func (s *MySQLStore) GetSteps(ctx context.Context, txID string) ([]*store.StepRecord, error) {
+func (s *MySQLStore) GetSteps(ctx context.Context, txID string) ([]*rte.StoreStepRecord, error) {
 	query := `
 		SELECT id, tx_id, step_index, step_name, status, idempotency_key,
 			input, output, error_msg, retry_count,
@@ -280,9 +381,9 @@ func (s *MySQLStore) GetSteps(ctx context.Context, txID string) ([]*store.StepRe
 	}
 	defer rows.Close()
 
-	var steps []*store.StepRecord
+	var steps []*rte.StoreStepRecord
 	for rows.Next() {
-		step := &store.StepRecord{}
+		step := &rte.StoreStepRecord{}
 		err := rows.Scan(
 			&step.ID, &step.TxID, &step.StepIndex, &step.StepName, &step.Status, &step.IdempotencyKey,
 			&step.Input, &step.Output, &step.ErrorMsg, &step.RetryCount,
@@ -307,7 +408,7 @@ func (s *MySQLStore) GetSteps(ctx context.Context, txID string) ([]*store.StepRe
 
 // GetPendingTransactions retrieves transactions that are pending (CREATED status)
 // and older than the specified duration.
-func (s *MySQLStore) GetPendingTransactions(ctx context.Context, olderThan time.Duration) ([]*store.Transaction, error) {
+func (s *MySQLStore) GetPendingTransactions(ctx context.Context, olderThan time.Duration) ([]*rte.StoreTx, error) {
 	query := `
 		SELECT id, tx_id, tx_type, status, current_step, total_steps, step_names,
 			lock_keys, context, error_msg, retry_count, max_retries, version,
@@ -323,7 +424,7 @@ func (s *MySQLStore) GetPendingTransactions(ctx context.Context, olderThan time.
 
 // GetStuckTransactions retrieves transactions that are stuck
 // (LOCKED or EXECUTING status) and older than the specified duration.
-func (s *MySQLStore) GetStuckTransactions(ctx context.Context, olderThan time.Duration) ([]*store.Transaction, error) {
+func (s *MySQLStore) GetStuckTransactions(ctx context.Context, olderThan time.Duration) ([]*rte.StoreTx, error) {
 	query := `
 		SELECT id, tx_id, tx_type, status, current_step, total_steps, step_names,
 			lock_keys, context, error_msg, retry_count, max_retries, version,
@@ -338,7 +439,7 @@ func (s *MySQLStore) GetStuckTransactions(ctx context.Context, olderThan time.Du
 }
 
 // GetRetryableTransactions retrieves failed transactions that can be retried.
-func (s *MySQLStore) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*store.Transaction, error) {
+func (s *MySQLStore) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*rte.StoreTx, error) {
 	query := `
 		SELECT id, tx_id, tx_type, status, current_step, total_steps, step_names,
 			lock_keys, context, error_msg, retry_count, max_retries, version,
@@ -352,21 +453,22 @@ func (s *MySQLStore) GetRetryableTransactions(ctx context.Context, maxRetries in
 }
 
 // queryTransactions is a helper function to query transactions.
-func (s *MySQLStore) queryTransactions(ctx context.Context, query string, args ...interface{}) ([]*store.Transaction, error) {
+func (s *MySQLStore) queryTransactions(ctx context.Context, query string, args ...interface{}) ([]*rte.StoreTx, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: query transactions: %v", rte.ErrStoreOperationFailed, err)
 	}
 	defer rows.Close()
 
-	var transactions []*store.Transaction
+	var transactions []*rte.StoreTx
 	for rows.Next() {
-		tx := &store.Transaction{}
-		var stepNames, lockKeys, contextJSON []byte
+		var stepNames, lockKeys []byte
+		var ctxData contextJSON
+		tx := &rte.StoreTx{}
 
 		err := rows.Scan(
 			&tx.ID, &tx.TxID, &tx.TxType, &tx.Status, &tx.CurrentStep, &tx.TotalSteps, &stepNames,
-			&lockKeys, &contextJSON, &tx.ErrorMsg, &tx.RetryCount, &tx.MaxRetries, &tx.Version,
+			&lockKeys, &ctxData, &tx.ErrorMsg, &tx.RetryCount, &tx.MaxRetries, &tx.Version,
 			&tx.CreatedAt, &tx.UpdatedAt, &tx.LockedAt, &tx.CompletedAt, &tx.TimeoutAt,
 		)
 		if err != nil {
@@ -379,9 +481,7 @@ func (s *MySQLStore) queryTransactions(ctx context.Context, query string, args .
 		if err := json.Unmarshal(lockKeys, &tx.LockKeys); err != nil {
 			return nil, fmt.Errorf("unmarshal lock_keys: %w", err)
 		}
-		if err := json.Unmarshal(contextJSON, &tx.Context); err != nil {
-			return nil, fmt.Errorf("unmarshal context: %w", err)
-		}
+		tx.Context = ctxData.toStoreTxContext()
 
 		transactions = append(transactions, tx)
 	}
@@ -398,7 +498,7 @@ func (s *MySQLStore) queryTransactions(ctx context.Context, query string, args .
 // ============================================================================
 
 // ListTransactions lists transactions with optional filters.
-func (s *MySQLStore) ListTransactions(ctx context.Context, filter *store.TxFilter) ([]*store.Transaction, int64, error) {
+func (s *MySQLStore) ListTransactions(ctx context.Context, filter *rte.StoreTxFilter) ([]*rte.StoreTx, int64, error) {
 	// Build WHERE clause
 	var conditions []string
 	var args []interface{}
@@ -457,6 +557,33 @@ func (s *MySQLStore) ListTransactions(ctx context.Context, filter *store.TxFilte
 	}
 
 	return transactions, total, nil
+}
+
+// CountTransactionsByStatus counts transactions grouped by status.
+func (s *MySQLStore) CountTransactionsByStatus(ctx context.Context) (map[rte.TxStatus]int64, error) {
+	query := `SELECT status, COUNT(*) FROM rte_transactions GROUP BY status`
+
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("%w: count transactions by status: %v", rte.ErrStoreOperationFailed, err)
+	}
+	defer rows.Close()
+
+	result := make(map[rte.TxStatus]int64)
+	for rows.Next() {
+		var status rte.TxStatus
+		var count int64
+		if err := rows.Scan(&status, &count); err != nil {
+			return nil, fmt.Errorf("%w: scan status count: %v", rte.ErrStoreOperationFailed, err)
+		}
+		result[status] = count
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%w: iterate status counts: %v", rte.ErrStoreOperationFailed, err)
+	}
+
+	return result, nil
 }
 
 // ============================================================================
@@ -532,5 +659,5 @@ func isDuplicateKeyError(err error) bool {
 		strings.Contains(err.Error(), "1062")
 }
 
-// Ensure MySQLStore implements store.Store interface.
-var _ store.Store = (*MySQLStore)(nil)
+// Ensure MySQLStore implements rte.TxStore interface.
+var _ rte.TxStore = (*MySQLStore)(nil)

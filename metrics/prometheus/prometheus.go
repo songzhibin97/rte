@@ -11,6 +11,32 @@ import (
 	"rte/metrics"
 )
 
+// knownReasons is the allowlist of reason label values for Prometheus metrics.
+// Any reason not in this set is normalized to "other" to prevent unbounded
+// cardinality that would cause Prometheus OOM.
+var knownReasons = map[string]struct{}{
+	"timeout":              {},
+	"cancelled":            {},
+	"compensation_failed":  {},
+	"step_error":           {},
+	"lock_failed":          {},
+	"circuit_open":         {},
+	"idempotency_failed":   {},
+	"version_conflict":     {},
+	"store_error":          {},
+	"context_cancelled":    {},
+	"context_deadline":     {},
+}
+
+// normalizeReason maps a reason string to a bounded label value.
+// Known reasons pass through unchanged; all others become "other".
+func normalizeReason(reason string) string {
+	if _, ok := knownReasons[reason]; ok {
+		return reason
+	}
+	return "other"
+}
+
 // PrometheusMetrics implements the Metrics interface using Prometheus.
 type PrometheusMetrics struct {
 	// Transaction metrics
@@ -220,7 +246,7 @@ func (p *PrometheusMetrics) TxCompleted(txType string, duration time.Duration) {
 }
 
 func (p *PrometheusMetrics) TxFailed(txType string, reason string) {
-	p.txFailedTotal.WithLabelValues(txType, reason).Inc()
+	p.txFailedTotal.WithLabelValues(txType, normalizeReason(reason)).Inc()
 }
 
 func (p *PrometheusMetrics) TxCompensated(txType string) {
@@ -243,7 +269,7 @@ func (p *PrometheusMetrics) StepCompleted(txType, stepName string, duration time
 }
 
 func (p *PrometheusMetrics) StepFailed(txType, stepName string, reason string) {
-	p.stepFailedTotal.WithLabelValues(txType, stepName, reason).Inc()
+	p.stepFailedTotal.WithLabelValues(txType, stepName, normalizeReason(reason)).Inc()
 }
 
 // Circuit breaker metrics
@@ -274,7 +300,7 @@ func (p *PrometheusMetrics) LockAcquired(duration time.Duration) {
 }
 
 func (p *PrometheusMetrics) LockFailed(reason string) {
-	p.lockFailedTotal.WithLabelValues(reason).Inc()
+	p.lockFailedTotal.WithLabelValues(normalizeReason(reason)).Inc()
 }
 
 func (p *PrometheusMetrics) LockExtended() {

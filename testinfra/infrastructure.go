@@ -56,7 +56,7 @@ type TestInfrastructure struct {
 	DB           *sql.DB
 	Redis        *redis.Client
 	MySQLStore   *mysql.MySQLStore
-	StoreAdapter *StoreAdapter
+	StoreAdapter *mysql.MySQLStore
 	Locker       lock.Locker
 	EventBus     event.EventBus
 	Breaker      *memory.MemoryBreaker
@@ -105,9 +105,8 @@ func NewTestInfrastructure(t *testing.T) *TestInfrastructure {
 		t.Skipf("Skipping test: Redis ping failed: %v", err)
 	}
 
-	// Create MySQL store and adapter
+	// Create MySQL store
 	mysqlStore := mysql.New(db)
-	storeAdapter := NewStoreAdapter(mysqlStore)
 
 	// Create locker
 	locker := rteredis.NewRedisLocker(redisClient)
@@ -118,9 +117,9 @@ func NewTestInfrastructure(t *testing.T) *TestInfrastructure {
 	// Create breaker
 	breaker := memory.NewMemoryBreaker()
 
-	// Create engine with store adapter
+	// Create engine with MySQL store directly
 	engine := rte.NewEngine(
-		storeAdapter,
+		mysqlStore,
 		rte.WithEngineLocker(locker),
 		rte.WithEngineBreaker(breaker),
 		rte.WithEngineEventBus(eventBus),
@@ -139,7 +138,7 @@ func NewTestInfrastructure(t *testing.T) *TestInfrastructure {
 		DB:           db,
 		Redis:        redisClient,
 		MySQLStore:   mysqlStore,
-		StoreAdapter: storeAdapter,
+		StoreAdapter: mysqlStore,
 		Locker:       locker,
 		EventBus:     eventBus,
 		Breaker:      breaker,
@@ -186,13 +185,12 @@ func NewTestInfrastructureWithConfig(t *testing.T, cfg TestConfig) *TestInfrastr
 	}
 
 	mysqlStore := mysql.New(db)
-	storeAdapter := NewStoreAdapter(mysqlStore)
 	locker := rteredis.NewRedisLocker(redisClient)
 	eventBus := event.NewMemoryEventBus()
 	breaker := memory.NewMemoryBreaker()
 
 	engine := rte.NewEngine(
-		storeAdapter,
+		mysqlStore,
 		rte.WithEngineLocker(locker),
 		rte.WithEngineBreaker(breaker),
 		rte.WithEngineEventBus(eventBus),
@@ -211,7 +209,7 @@ func NewTestInfrastructureWithConfig(t *testing.T, cfg TestConfig) *TestInfrastr
 		DB:           db,
 		Redis:        redisClient,
 		MySQLStore:   mysqlStore,
-		StoreAdapter: storeAdapter,
+		StoreAdapter: mysqlStore,
 		Locker:       locker,
 		EventBus:     eventBus,
 		Breaker:      breaker,

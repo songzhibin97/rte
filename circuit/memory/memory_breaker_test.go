@@ -4,6 +4,8 @@ package memory
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -234,6 +236,73 @@ func TestMemoryBreaker_Reset(t *testing.T) {
 	counts := cb.Counts()
 	if counts.Requests != 0 || counts.TotalFailures != 0 {
 		t.Errorf("expected zero counts after reset, got %+v", counts)
+	}
+}
+
+// ============================================================================
+// List Tests
+// ============================================================================
+
+func TestMemoryBreaker_List_Empty(t *testing.T) {
+	breaker := NewMemoryBreaker()
+	result := breaker.List()
+	if result == nil {
+		t.Error("expected non-nil slice, got nil")
+	}
+	if len(result) != 0 {
+		t.Errorf("expected empty list, got %d items", len(result))
+	}
+}
+
+func TestMemoryBreaker_List_MultipleServices(t *testing.T) {
+	breaker := NewMemoryBreaker()
+
+	services := []string{"service-c", "service-a", "service-b"}
+	for _, svc := range services {
+		breaker.Get(svc)
+	}
+
+	result := breaker.List()
+	if len(result) != len(services) {
+		t.Fatalf("expected %d breakers, got %d", len(services), len(result))
+	}
+
+	// Verify sorted order
+	expected := []string{"service-a", "service-b", "service-c"}
+	for i, sb := range result {
+		if sb.Service != expected[i] {
+			t.Errorf("index %d: expected service %q, got %q", i, expected[i], sb.Service)
+		}
+		if sb.Breaker == nil {
+			t.Errorf("index %d: expected non-nil Breaker", i)
+		}
+	}
+}
+
+func TestMemoryBreaker_List_ConcurrentSafe(t *testing.T) {
+	breaker := NewMemoryBreaker()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			svc := fmt.Sprintf("service-%d", n)
+			breaker.Get(svc)
+		}(i)
+	}
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = breaker.List()
+		}()
+	}
+	wg.Wait()
+
+	result := breaker.List()
+	if len(result) != 10 {
+		t.Errorf("expected 10 breakers, got %d", len(result))
 	}
 }
 

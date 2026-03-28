@@ -34,7 +34,7 @@ func NewErrorHandlingService() *ErrorHandlingService {
 	eventBus := event.NewMemoryEventBus()
 
 	engine := rte.NewEngine(
-		rte.WithEngineStore(rteStore),
+		rteStore,
 		rte.WithEngineLocker(locker),
 		rte.WithEngineBreaker(breaker),
 		rte.WithEngineEventBus(eventBus),

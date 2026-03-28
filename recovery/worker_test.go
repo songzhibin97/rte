@@ -23,19 +23,27 @@ import (
 
 var errMockFailure = errors.New("mock failure")
 
-// mockStore implements TxStore for testing
+// mockStore implements rte.TxStore for testing
 type mockStore struct {
 	mu           sync.RWMutex
-	transactions map[string]*StoreTx
+	transactions map[string]*rte.StoreTx
 }
 
 func newMockStore() *mockStore {
 	return &mockStore{
-		transactions: make(map[string]*StoreTx),
+		transactions: make(map[string]*rte.StoreTx),
 	}
 }
 
-func (s *mockStore) GetTransaction(ctx context.Context, txID string) (*StoreTx, error) {
+func (s *mockStore) CreateTransaction(ctx context.Context, tx *rte.StoreTx) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	txCopy := *tx
+	s.transactions[tx.TxID] = &txCopy
+	return nil
+}
+
+func (s *mockStore) GetTransaction(ctx context.Context, txID string) (*rte.StoreTx, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	tx, exists := s.transactions[txID]
@@ -46,7 +54,7 @@ func (s *mockStore) GetTransaction(ctx context.Context, txID string) (*StoreTx, 
 	return &txCopy, nil
 }
 
-func (s *mockStore) UpdateTransaction(ctx context.Context, tx *StoreTx) error {
+func (s *mockStore) UpdateTransaction(ctx context.Context, tx *rte.StoreTx) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	txCopy := *tx
@@ -54,13 +62,33 @@ func (s *mockStore) UpdateTransaction(ctx context.Context, tx *StoreTx) error {
 	return nil
 }
 
-func (s *mockStore) GetStuckTransactions(ctx context.Context, olderThan time.Duration) ([]*StoreTx, error) {
+func (s *mockStore) CreateStep(ctx context.Context, step *rte.StoreStepRecord) error {
+	return nil
+}
+
+func (s *mockStore) UpdateStep(ctx context.Context, step *rte.StoreStepRecord) error {
+	return nil
+}
+
+func (s *mockStore) GetStep(ctx context.Context, txID string, stepIndex int) (*rte.StoreStepRecord, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (s *mockStore) GetSteps(ctx context.Context, txID string) ([]*rte.StoreStepRecord, error) {
+	return nil, nil
+}
+
+func (s *mockStore) GetPendingTransactions(ctx context.Context, olderThan time.Duration) ([]*rte.StoreTx, error) {
+	return nil, nil
+}
+
+func (s *mockStore) GetStuckTransactions(ctx context.Context, olderThan time.Duration) ([]*rte.StoreTx, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var result []*StoreTx
+	var result []*rte.StoreTx
 	threshold := time.Now().Add(-olderThan)
 	for _, tx := range s.transactions {
-		if (tx.Status == string(rte.TxStatusLocked) || tx.Status == string(rte.TxStatusExecuting)) && tx.UpdatedAt.Before(threshold) {
+		if (tx.Status == rte.TxStatusLocked || tx.Status == rte.TxStatusExecuting) && tx.UpdatedAt.Before(threshold) {
 			txCopy := *tx
 			result = append(result, &txCopy)
 		}
@@ -68,12 +96,12 @@ func (s *mockStore) GetStuckTransactions(ctx context.Context, olderThan time.Dur
 	return result, nil
 }
 
-func (s *mockStore) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*StoreTx, error) {
+func (s *mockStore) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*rte.StoreTx, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var result []*StoreTx
+	var result []*rte.StoreTx
 	for _, tx := range s.transactions {
-		if tx.Status == string(rte.TxStatusFailed) && tx.RetryCount < maxRetries {
+		if tx.Status == rte.TxStatusFailed && tx.RetryCount < maxRetries {
 			txCopy := *tx
 			result = append(result, &txCopy)
 		}
@@ -81,7 +109,33 @@ func (s *mockStore) GetRetryableTransactions(ctx context.Context, maxRetries int
 	return result, nil
 }
 
-func (s *mockStore) AddTransaction(tx *StoreTx) {
+func (s *mockStore) ListTransactions(ctx context.Context, filter *rte.StoreTxFilter) ([]*rte.StoreTx, int64, error) {
+	return nil, 0, nil
+}
+
+func (s *mockStore) CheckIdempotency(ctx context.Context, key string) (bool, []byte, error) {
+	return false, nil, nil
+}
+
+func (s *mockStore) MarkIdempotency(ctx context.Context, key string, result []byte, ttl time.Duration) error {
+	return nil
+}
+
+func (s *mockStore) DeleteExpiredIdempotency(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
+func (s *mockStore) CountTransactionsByStatus(ctx context.Context) (map[rte.TxStatus]int64, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	counts := make(map[rte.TxStatus]int64)
+	for _, tx := range s.transactions {
+		counts[tx.Status]++
+	}
+	return counts, nil
+}
+
+func (s *mockStore) AddTransaction(tx *rte.StoreTx) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	txCopy := *tx
@@ -163,17 +217,20 @@ func newMockCoordinator() *mockCoordinator {
 	}
 }
 
-func (c *mockCoordinator) Resume(ctx context.Context, txID string) error {
+func (c *mockCoordinator) Resume(ctx context.Context, tx *rte.StoreTx) (*rte.TxResult, error) {
 	if c.resumeDelay > 0 {
 		time.Sleep(c.resumeDelay)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.resumeCalls = append(c.resumeCalls, txID)
-	if err, ok := c.resumeResult[txID]; ok {
-		return err
+	c.resumeCalls = append(c.resumeCalls, tx.TxID)
+	if err, ok := c.resumeResult[tx.TxID]; ok {
+		return nil, err
 	}
-	return c.resumeErr
+	if c.resumeErr != nil {
+		return nil, c.resumeErr
+	}
+	return &rte.TxResult{TxID: tx.TxID, Status: rte.TxStatusCompleted}, nil
 }
 
 func (c *mockCoordinator) GetResumeCalls() []string {
@@ -221,35 +278,71 @@ func (l *capturingLogger) GetMessages() []string {
 	return result
 }
 
-// failingStore implements TxStore that returns errors
+// failingStore implements rte.TxStore that returns errors
 type failingStore struct {
 	getStuckErr     error
 	getRetryableErr error
 	getTransErr     error
 }
 
-func (s *failingStore) GetTransaction(ctx context.Context, txID string) (*StoreTx, error) {
+func (s *failingStore) CreateTransaction(ctx context.Context, tx *rte.StoreTx) error { return nil }
+
+func (s *failingStore) GetTransaction(ctx context.Context, txID string) (*rte.StoreTx, error) {
 	if s.getTransErr != nil {
 		return nil, s.getTransErr
 	}
-	return &StoreTx{TxID: txID, Status: string(rte.TxStatusExecuting)}, nil
+	return &rte.StoreTx{TxID: txID, Status: rte.TxStatusExecuting}, nil
 }
 
-func (s *failingStore) UpdateTransaction(ctx context.Context, tx *StoreTx) error {
-	return nil
+func (s *failingStore) UpdateTransaction(ctx context.Context, tx *rte.StoreTx) error { return nil }
+
+func (s *failingStore) CreateStep(ctx context.Context, step *rte.StoreStepRecord) error { return nil }
+
+func (s *failingStore) UpdateStep(ctx context.Context, step *rte.StoreStepRecord) error { return nil }
+
+func (s *failingStore) GetStep(ctx context.Context, txID string, stepIndex int) (*rte.StoreStepRecord, error) {
+	return nil, errors.New("not implemented")
 }
 
-func (s *failingStore) GetStuckTransactions(ctx context.Context, olderThan time.Duration) ([]*StoreTx, error) {
+func (s *failingStore) GetSteps(ctx context.Context, txID string) ([]*rte.StoreStepRecord, error) {
+	return nil, nil
+}
+
+func (s *failingStore) GetPendingTransactions(ctx context.Context, olderThan time.Duration) ([]*rte.StoreTx, error) {
+	return nil, nil
+}
+
+func (s *failingStore) GetStuckTransactions(ctx context.Context, olderThan time.Duration) ([]*rte.StoreTx, error) {
 	if s.getStuckErr != nil {
 		return nil, s.getStuckErr
 	}
 	return nil, nil
 }
 
-func (s *failingStore) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*StoreTx, error) {
+func (s *failingStore) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*rte.StoreTx, error) {
 	if s.getRetryableErr != nil {
 		return nil, s.getRetryableErr
 	}
+	return nil, nil
+}
+
+func (s *failingStore) ListTransactions(ctx context.Context, filter *rte.StoreTxFilter) ([]*rte.StoreTx, int64, error) {
+	return nil, 0, nil
+}
+
+func (s *failingStore) CheckIdempotency(ctx context.Context, key string) (bool, []byte, error) {
+	return false, nil, nil
+}
+
+func (s *failingStore) MarkIdempotency(ctx context.Context, key string, result []byte, ttl time.Duration) error {
+	return nil
+}
+
+func (s *failingStore) DeleteExpiredIdempotency(ctx context.Context) (int64, error) {
+	return 0, nil
+}
+
+func (s *failingStore) CountTransactionsByStatus(ctx context.Context) (map[rte.TxStatus]int64, error) {
 	return nil, nil
 }
 
@@ -360,10 +453,10 @@ func TestWorker_Run_ScanOnTicker(t *testing.T) {
 
 	// Add a stuck transaction
 	stuckTime := time.Now().Add(-10 * time.Minute)
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-ticker-test",
 		TxType:     "test",
-		Status:     string(rte.TxStatusExecuting),
+		Status:     rte.TxStatusExecuting,
 		RetryCount: 0,
 		MaxRetries: 3,
 		UpdatedAt:  stuckTime,
@@ -412,10 +505,10 @@ func TestWorker_IncrementFailed(t *testing.T) {
 
 	// Add a stuck transaction
 	stuckTime := time.Now().Add(-10 * time.Minute)
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-fail-test",
 		TxType:     "test",
-		Status:     string(rte.TxStatusExecuting),
+		Status:     rte.TxStatusExecuting,
 		RetryCount: 0,
 		MaxRetries: 3,
 		UpdatedAt:  stuckTime,
@@ -452,10 +545,10 @@ func TestWorker_ResetStats(t *testing.T) {
 
 	// Add a stuck transaction
 	stuckTime := time.Now().Add(-10 * time.Minute)
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-reset-test",
 		TxType:     "test",
-		Status:     string(rte.TxStatusExecuting),
+		Status:     rte.TxStatusExecuting,
 		RetryCount: 0,
 		MaxRetries: 3,
 		UpdatedAt:  stuckTime,
@@ -581,10 +674,10 @@ func TestWorker_RecoverTransaction_LockAcquisitionFailed(t *testing.T) {
 
 	// Add a stuck transaction
 	stuckTime := time.Now().Add(-10 * time.Minute)
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-lock-fail",
 		TxType:     "test",
-		Status:     string(rte.TxStatusExecuting),
+		Status:     rte.TxStatusExecuting,
 		RetryCount: 0,
 		MaxRetries: 3,
 		UpdatedAt:  stuckTime,
@@ -626,7 +719,7 @@ type reloadFailingStore struct {
 	failOnReload bool
 }
 
-func (s *reloadFailingStore) GetTransaction(ctx context.Context, txID string) (*StoreTx, error) {
+func (s *reloadFailingStore) GetTransaction(ctx context.Context, txID string) (*rte.StoreTx, error) {
 	if s.failOnReload {
 		return nil, errors.New("reload failed")
 	}
@@ -643,10 +736,10 @@ func TestWorker_RecoverTransaction_ReloadFailed(t *testing.T) {
 
 	// Add a stuck transaction
 	stuckTime := time.Now().Add(-10 * time.Minute)
-	baseStore.AddTransaction(&StoreTx{
+	baseStore.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-reload-fail",
 		TxType:     "test",
-		Status:     string(rte.TxStatusExecuting),
+		Status:     rte.TxStatusExecuting,
 		RetryCount: 0,
 		MaxRetries: 3,
 		UpdatedAt:  stuckTime,
@@ -685,10 +778,10 @@ func TestWorker_RecoverTransaction_ReloadFailed(t *testing.T) {
 // statusChangedStore returns a different status on reload
 type statusChangedStore struct {
 	*mockStore
-	newStatus string
+	newStatus rte.TxStatus
 }
 
-func (s *statusChangedStore) GetTransaction(ctx context.Context, txID string) (*StoreTx, error) {
+func (s *statusChangedStore) GetTransaction(ctx context.Context, txID string) (*rte.StoreTx, error) {
 	tx, err := s.mockStore.GetTransaction(ctx, txID)
 	if err != nil {
 		return nil, err
@@ -701,17 +794,17 @@ func (s *statusChangedStore) GetTransaction(ctx context.Context, txID string) (*
 // TestWorker_RecoverTransaction_StatusAlreadyChanged tests when transaction status has changed
 func TestWorker_RecoverTransaction_StatusAlreadyChanged(t *testing.T) {
 	baseStore := newMockStore()
-	store := &statusChangedStore{mockStore: baseStore, newStatus: string(rte.TxStatusCompleted)}
+	store := &statusChangedStore{mockStore: baseStore, newStatus: rte.TxStatusCompleted}
 	locker := newMockLocker()
 	coordinator := newMockCoordinator()
 	logger := &capturingLogger{}
 
 	// Add a stuck transaction (will be returned as COMPLETED on reload)
 	stuckTime := time.Now().Add(-10 * time.Minute)
-	baseStore.AddTransaction(&StoreTx{
+	baseStore.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-status-changed",
 		TxType:     "test",
-		Status:     string(rte.TxStatusExecuting),
+		Status:     rte.TxStatusExecuting,
 		RetryCount: 0,
 		MaxRetries: 3,
 		UpdatedAt:  stuckTime,
@@ -750,17 +843,17 @@ func TestWorker_RecoverTransaction_StatusAlreadyChanged(t *testing.T) {
 // TestWorker_RecoverTransaction_StatusChangedToFailed tests when status changed to FAILED
 func TestWorker_RecoverTransaction_StatusChangedToFailed(t *testing.T) {
 	baseStore := newMockStore()
-	store := &statusChangedStore{mockStore: baseStore, newStatus: string(rte.TxStatusFailed)}
+	store := &statusChangedStore{mockStore: baseStore, newStatus: rte.TxStatusFailed}
 	locker := newMockLocker()
 	coordinator := newMockCoordinator()
 	logger := &capturingLogger{}
 
 	// Add a stuck transaction (will be returned as FAILED on reload)
 	stuckTime := time.Now().Add(-10 * time.Minute)
-	baseStore.AddTransaction(&StoreTx{
+	baseStore.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-status-failed",
 		TxType:     "test",
-		Status:     string(rte.TxStatusExecuting),
+		Status:     rte.TxStatusExecuting,
 		RetryCount: 0,
 		MaxRetries: 3,
 		UpdatedAt:  stuckTime,
@@ -806,10 +899,10 @@ func TestWorker_RetryTransaction_MaxRetriesExceeded(t *testing.T) {
 	})
 
 	// Add a failed transaction that has exceeded max retries
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-max-retries-test",
 		TxType:     "test",
-		Status:     string(rte.TxStatusFailed),
+		Status:     rte.TxStatusFailed,
 		RetryCount: 3, // Already at max
 		MaxRetries: 3,
 		UpdatedAt:  time.Now(),
@@ -875,10 +968,10 @@ func TestWorker_RetryTransaction_Success(t *testing.T) {
 	logger := &capturingLogger{}
 
 	// Add a failed transaction that can be retried
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-retry-success",
 		TxType:     "test",
-		Status:     string(rte.TxStatusFailed),
+		Status:     rte.TxStatusFailed,
 		RetryCount: 1, // Below max
 		MaxRetries: 3,
 		UpdatedAt:  time.Now(),
@@ -937,10 +1030,10 @@ func TestWorker_RetryTransaction_LockAcquisitionFailed(t *testing.T) {
 	logger := &capturingLogger{}
 
 	// Add a failed transaction that can be retried
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-retry-lock-fail",
 		TxType:     "test",
-		Status:     string(rte.TxStatusFailed),
+		Status:     rte.TxStatusFailed,
 		RetryCount: 1,
 		MaxRetries: 3,
 		UpdatedAt:  time.Now(),
@@ -968,7 +1061,7 @@ type retryReloadFailingStore struct {
 	*mockStore
 }
 
-func (s *retryReloadFailingStore) GetTransaction(ctx context.Context, txID string) (*StoreTx, error) {
+func (s *retryReloadFailingStore) GetTransaction(ctx context.Context, txID string) (*rte.StoreTx, error) {
 	return nil, errors.New("reload failed")
 }
 
@@ -981,10 +1074,10 @@ func TestWorker_RetryTransaction_ReloadFailed(t *testing.T) {
 	logger := &capturingLogger{}
 
 	// Add a failed transaction
-	baseStore.AddTransaction(&StoreTx{
+	baseStore.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-retry-reload-fail",
 		TxType:     "test",
-		Status:     string(rte.TxStatusFailed),
+		Status:     rte.TxStatusFailed,
 		RetryCount: 1,
 		MaxRetries: 3,
 		UpdatedAt:  time.Now(),
@@ -1023,10 +1116,10 @@ func TestWorker_RetryTransaction_ReloadFailed(t *testing.T) {
 // retryStatusChangedStore returns a different status on reload for retry path
 type retryStatusChangedStore struct {
 	*mockStore
-	newStatus string
+	newStatus rte.TxStatus
 }
 
-func (s *retryStatusChangedStore) GetTransaction(ctx context.Context, txID string) (*StoreTx, error) {
+func (s *retryStatusChangedStore) GetTransaction(ctx context.Context, txID string) (*rte.StoreTx, error) {
 	tx, err := s.mockStore.GetTransaction(ctx, txID)
 	if err != nil {
 		return nil, err
@@ -1038,16 +1131,16 @@ func (s *retryStatusChangedStore) GetTransaction(ctx context.Context, txID strin
 // TestWorker_RetryTransaction_StatusNoLongerFailed tests when status is no longer FAILED
 func TestWorker_RetryTransaction_StatusNoLongerFailed(t *testing.T) {
 	baseStore := newMockStore()
-	store := &retryStatusChangedStore{mockStore: baseStore, newStatus: string(rte.TxStatusCompleted)}
+	store := &retryStatusChangedStore{mockStore: baseStore, newStatus: rte.TxStatusCompleted}
 	locker := newMockLocker()
 	coordinator := newMockCoordinator()
 	logger := &capturingLogger{}
 
 	// Add a failed transaction (will be returned as COMPLETED on reload)
-	baseStore.AddTransaction(&StoreTx{
+	baseStore.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-retry-status-changed",
 		TxType:     "test",
-		Status:     string(rte.TxStatusFailed),
+		Status:     rte.TxStatusFailed,
 		RetryCount: 1,
 		MaxRetries: 3,
 		UpdatedAt:  time.Now(),
@@ -1079,10 +1172,10 @@ func TestWorker_RetryTransaction_ResumeFailed(t *testing.T) {
 	logger := &capturingLogger{}
 
 	// Add a failed transaction
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-retry-resume-fail",
 		TxType:     "test",
-		Status:     string(rte.TxStatusFailed),
+		Status:     rte.TxStatusFailed,
 		RetryCount: 1,
 		MaxRetries: 3,
 		UpdatedAt:  time.Now(),
@@ -1204,10 +1297,10 @@ func TestWorker_RecoverStuckTransaction(t *testing.T) {
 
 	// Add a stuck transaction
 	stuckTime := time.Now().Add(-10 * time.Minute)
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-stuck-1",
 		TxType:     "test",
-		Status:     string(rte.TxStatusExecuting),
+		Status:     rte.TxStatusExecuting,
 		RetryCount: 0,
 		MaxRetries: 3,
 		UpdatedAt:  stuckTime,
@@ -1256,10 +1349,10 @@ func TestWorker_RetryFailedTransaction(t *testing.T) {
 	eventBus := event.NewMemoryEventBus()
 
 	// Add a failed transaction that can be retried
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-failed-1",
 		TxType:     "test",
-		Status:     string(rte.TxStatusFailed),
+		Status:     rte.TxStatusFailed,
 		RetryCount: 1,
 		MaxRetries: 3,
 		UpdatedAt:  time.Now(),
@@ -1311,10 +1404,10 @@ func TestWorker_MaxRetriesExceeded(t *testing.T) {
 	// Add a failed transaction that has exceeded max retries
 	// Note: RetryCount=2 so it will be returned by GetRetryableTransactions (2 < 3)
 	// but when we check in retryTransaction, we'll see it's at max
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-max-retries",
 		TxType:     "test",
-		Status:     string(rte.TxStatusFailed),
+		Status:     rte.TxStatusFailed,
 		RetryCount: 3, // Already at max
 		MaxRetries: 3,
 		UpdatedAt:  time.Now(),
@@ -1366,14 +1459,14 @@ type maxRetriesTestStore struct {
 	*mockStore
 }
 
-func (s *maxRetriesTestStore) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*StoreTx, error) {
+func (s *maxRetriesTestStore) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*rte.StoreTx, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var result []*StoreTx
+	var result []*rte.StoreTx
 	for _, tx := range s.transactions {
 		// Return all FAILED transactions, even those at max retries
 		// This simulates the scenario where we need to check and alert
-		if tx.Status == "FAILED" {
+		if tx.Status == rte.TxStatusFailed {
 			txCopy := *tx
 			result = append(result, &txCopy)
 		}
@@ -1388,10 +1481,10 @@ func TestWorker_SkipsAlreadyRecoveredTransaction(t *testing.T) {
 
 	// Add a transaction that was stuck but is now completed
 	stuckTime := time.Now().Add(-10 * time.Minute)
-	store.AddTransaction(&StoreTx{
+	store.AddTransaction(&rte.StoreTx{
 		TxID:       "tx-recovered",
 		TxType:     "test",
-		Status:     string(rte.TxStatusCompleted), // Already recovered
+		Status:     rte.TxStatusCompleted, // Already recovered
 		RetryCount: 0,
 		MaxRetries: 3,
 		UpdatedAt:  stuckTime,
@@ -1437,10 +1530,10 @@ func TestProperty_RecoveryWorkerCoordination(t *testing.T) {
 		// Add stuck transactions
 		stuckTime := time.Now().Add(-10 * time.Minute)
 		for i := 0; i < numTx; i++ {
-			store.AddTransaction(&StoreTx{
+			store.AddTransaction(&rte.StoreTx{
 				TxID:       fmt.Sprintf("tx-stuck-%d", i),
 				TxType:     "test",
-				Status:     string(rte.TxStatusExecuting),
+				Status:     rte.TxStatusExecuting,
 				RetryCount: 0,
 				MaxRetries: 3,
 				UpdatedAt:  stuckTime,
@@ -1515,24 +1608,24 @@ type trackingCoordinator struct {
 	store       *mockStore
 }
 
-func (c *trackingCoordinator) Resume(ctx context.Context, txID string) error {
+func (c *trackingCoordinator) Resume(ctx context.Context, tx *rte.StoreTx) (*rte.TxResult, error) {
 	// Simulate some processing time
 	time.Sleep(10 * time.Millisecond)
 
 	c.mu.Lock()
-	c.processedBy[txID] = append(c.processedBy[txID], c.workerID)
+	c.processedBy[tx.TxID] = append(c.processedBy[tx.TxID], c.workerID)
 	c.mu.Unlock()
 
 	// Update transaction status to COMPLETED so other workers won't process it
 	if c.store != nil {
 		c.store.mu.Lock()
-		if tx, exists := c.store.transactions[txID]; exists {
-			tx.Status = "COMPLETED"
+		if t, exists := c.store.transactions[tx.TxID]; exists {
+			t.Status = rte.TxStatusCompleted
 		}
 		c.store.mu.Unlock()
 	}
 
-	return nil
+	return &rte.TxResult{TxID: tx.TxID, Status: rte.TxStatusCompleted}, nil
 }
 
 // TestProperty_RecoveryWorkerCoordination_WithContention tests coordination under high contention
@@ -1544,10 +1637,10 @@ func TestProperty_RecoveryWorkerCoordination_WithContention(t *testing.T) {
 
 		// Single stuck transaction with multiple workers competing
 		stuckTime := time.Now().Add(-10 * time.Minute)
-		store.AddTransaction(&StoreTx{
+		store.AddTransaction(&rte.StoreTx{
 			TxID:       "tx-contended",
 			TxType:     "test",
-			Status:     string(rte.TxStatusExecuting),
+			Status:     rte.TxStatusExecuting,
 			RetryCount: 0,
 			MaxRetries: 3,
 			UpdatedAt:  stuckTime,
@@ -1606,7 +1699,7 @@ type countingCoordinator struct {
 	store        *mockStore
 }
 
-func (c *countingCoordinator) Resume(ctx context.Context, txID string) error {
+func (c *countingCoordinator) Resume(ctx context.Context, tx *rte.StoreTx) (*rte.TxResult, error) {
 	// Simulate some processing time
 	time.Sleep(50 * time.Millisecond)
 	atomic.AddInt32(c.processCount, 1)
@@ -1614,13 +1707,13 @@ func (c *countingCoordinator) Resume(ctx context.Context, txID string) error {
 	// Update transaction status to COMPLETED so other workers won't process it
 	if c.store != nil {
 		c.store.mu.Lock()
-		if tx, exists := c.store.transactions[txID]; exists {
-			tx.Status = "COMPLETED"
+		if t, exists := c.store.transactions[tx.TxID]; exists {
+			t.Status = rte.TxStatusCompleted
 		}
 		c.store.mu.Unlock()
 	}
 
-	return nil
+	return &rte.TxResult{TxID: tx.TxID, Status: rte.TxStatusCompleted}, nil
 }
 
 // ============================================================================
@@ -1659,10 +1752,10 @@ func TestProperty_RecoveryRetryLimit(t *testing.T) {
 
 		// Add a failed transaction that has reached or exceeded max retries
 		txID := fmt.Sprintf("tx-retry-limit-%d-%d", maxRetries, retryCount)
-		store.AddTransaction(&StoreTx{
+		store.AddTransaction(&rte.StoreTx{
 			TxID:       txID,
 			TxType:     "test",
-			Status:     string(rte.TxStatusFailed),
+			Status:     rte.TxStatusFailed,
 			RetryCount: retryCount,
 			MaxRetries: maxRetries,
 			UpdatedAt:  time.Now(),
@@ -1745,10 +1838,10 @@ func TestProperty_RecoveryRetryLimit_BelowMax(t *testing.T) {
 
 		// Add a failed transaction that can still be retried
 		txID := fmt.Sprintf("tx-retry-allowed-%d-%d", maxRetries, retryCount)
-		store.AddTransaction(&StoreTx{
+		store.AddTransaction(&rte.StoreTx{
 			TxID:       txID,
 			TxType:     "test",
-			Status:     string(rte.TxStatusFailed),
+			Status:     rte.TxStatusFailed,
 			RetryCount: retryCount,
 			MaxRetries: maxRetries,
 			UpdatedAt:  time.Now(),
@@ -1793,19 +1886,19 @@ type atomicCountingCoordinator struct {
 	store     *mockStore
 }
 
-func (c *atomicCountingCoordinator) Resume(ctx context.Context, txID string) error {
+func (c *atomicCountingCoordinator) Resume(ctx context.Context, tx *rte.StoreTx) (*rte.TxResult, error) {
 	atomic.AddInt32(c.callCount, 1)
 
 	// Update transaction status to COMPLETED so it won't be processed again
 	if c.store != nil {
 		c.store.mu.Lock()
-		if tx, exists := c.store.transactions[txID]; exists {
-			tx.Status = "COMPLETED"
+		if t, exists := c.store.transactions[tx.TxID]; exists {
+			t.Status = rte.TxStatusCompleted
 		}
 		c.store.mu.Unlock()
 	}
 
-	return nil
+	return &rte.TxResult{TxID: tx.TxID, Status: rte.TxStatusCompleted}, nil
 }
 
 // maxRetriesPropertyTestStore wraps mockStore to return all FAILED transactions
@@ -1813,14 +1906,14 @@ type maxRetriesPropertyTestStore struct {
 	*mockStore
 }
 
-func (s *maxRetriesPropertyTestStore) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*StoreTx, error) {
+func (s *maxRetriesPropertyTestStore) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*rte.StoreTx, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var result []*StoreTx
+	var result []*rte.StoreTx
 	for _, tx := range s.transactions {
 		// Return all FAILED transactions regardless of retry count
 		// This simulates the scenario where we need to check and potentially alert
-		if tx.Status == "FAILED" {
+		if tx.Status == rte.TxStatusFailed {
 			txCopy := *tx
 			result = append(result, &txCopy)
 		}
@@ -1870,10 +1963,10 @@ func TestProperty_RecoveryLockAcquisition(t *testing.T) {
 		for i := 0; i < numTx; i++ {
 			txID := fmt.Sprintf("tx-lock-test-%d", i)
 			txIDs[i] = txID
-			store.AddTransaction(&StoreTx{
+			store.AddTransaction(&rte.StoreTx{
 				TxID:       txID,
 				TxType:     "test",
-				Status:     string(rte.TxStatusExecuting),
+				Status:     rte.TxStatusExecuting,
 				RetryCount: 0,
 				MaxRetries: 3,
 				UpdatedAt:  stuckTime,
@@ -1962,10 +2055,10 @@ func TestProperty_RecoveryLockAcquisition_FailedTransactions(t *testing.T) {
 		for i := 0; i < numTx; i++ {
 			txID := fmt.Sprintf("tx-failed-lock-test-%d", i)
 			txIDs[i] = txID
-			store.AddTransaction(&StoreTx{
+			store.AddTransaction(&rte.StoreTx{
 				TxID:       txID,
 				TxType:     "test",
-				Status:     string(rte.TxStatusFailed),
+				Status:     rte.TxStatusFailed,
 				RetryCount: 0, // Can be retried
 				MaxRetries: 3,
 				UpdatedAt:  time.Now(),
@@ -2009,10 +2102,10 @@ func TestProperty_RecoveryLockAcquisition_PreventsConcurrentProcessing(t *testin
 		// Single transaction with multiple workers competing
 		stuckTime := time.Now().Add(-10 * time.Minute)
 		txID := "tx-concurrent-lock-test"
-		store.AddTransaction(&StoreTx{
+		store.AddTransaction(&rte.StoreTx{
 			TxID:       txID,
 			TxType:     "test",
-			Status:     string(rte.TxStatusExecuting),
+			Status:     rte.TxStatusExecuting,
 			RetryCount: 0,
 			MaxRetries: 3,
 			UpdatedAt:  stuckTime,
@@ -2137,14 +2230,14 @@ type lockVerifyingCoordinator struct {
 	store       *mockStore
 }
 
-func (c *lockVerifyingCoordinator) Resume(ctx context.Context, txID string) error {
+func (c *lockVerifyingCoordinator) Resume(ctx context.Context, tx *rte.StoreTx) (*rte.TxResult, error) {
 	// Check if lock is held for this transaction
-	lockKey := fmt.Sprintf("recovery:%s", txID)
+	lockKey := fmt.Sprintf("recovery:%s", tx.TxID)
 	lockHeld := c.locker.IsLocked(lockKey)
 
 	c.mu.Lock()
 	*c.resumeCalls = append(*c.resumeCalls, resumeCallRecord{
-		txID:     txID,
+		txID:     tx.TxID,
 		lockHeld: lockHeld,
 	})
 	c.mu.Unlock()
@@ -2152,11 +2245,11 @@ func (c *lockVerifyingCoordinator) Resume(ctx context.Context, txID string) erro
 	// Update transaction status to COMPLETED
 	if c.store != nil {
 		c.store.mu.Lock()
-		if tx, exists := c.store.transactions[txID]; exists {
-			tx.Status = "COMPLETED"
+		if t, exists := c.store.transactions[tx.TxID]; exists {
+			t.Status = rte.TxStatusCompleted
 		}
 		c.store.mu.Unlock()
 	}
 
-	return nil
+	return &rte.TxResult{TxID: tx.TxID, Status: rte.TxStatusCompleted}, nil
 }

@@ -16,6 +16,7 @@ import (
 	"rte/circuit/memory"
 	"rte/event"
 	"rte/recovery"
+	"rte/store/mysql"
 
 	"pgregory.net/rapid"
 )
@@ -194,93 +195,6 @@ var _ rte.Step = (*recoveryTestStep)(nil)
 // Tests that the recovery worker correctly identifies and processes stuck transactions.
 // ============================================================================
 
-// recoveryStoreAdapter adapts StoreAdapter to recovery.TxStore interface
-type recoveryStoreAdapter struct {
-	store *StoreAdapter
-}
-
-func (a *recoveryStoreAdapter) GetTransaction(ctx context.Context, txID string) (*recovery.StoreTx, error) {
-	tx, err := a.store.GetTransaction(ctx, txID)
-	if err != nil {
-		return nil, err
-	}
-	return toRecoveryStoreTx(tx), nil
-}
-
-func (a *recoveryStoreAdapter) UpdateTransaction(ctx context.Context, tx *recovery.StoreTx) error {
-	rteTx := fromRecoveryStoreTx(tx)
-	return a.store.UpdateTransaction(ctx, rteTx)
-}
-
-func (a *recoveryStoreAdapter) GetStuckTransactions(ctx context.Context, olderThan time.Duration) ([]*recovery.StoreTx, error) {
-	txs, err := a.store.GetStuckTransactions(ctx, olderThan)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]*recovery.StoreTx, len(txs))
-	for i, tx := range txs {
-		result[i] = toRecoveryStoreTx(tx)
-	}
-	return result, nil
-}
-
-func (a *recoveryStoreAdapter) GetRetryableTransactions(ctx context.Context, maxRetries int) ([]*recovery.StoreTx, error) {
-	txs, err := a.store.GetRetryableTransactions(ctx, maxRetries)
-	if err != nil {
-		return nil, err
-	}
-	result := make([]*recovery.StoreTx, len(txs))
-	for i, tx := range txs {
-		result[i] = toRecoveryStoreTx(tx)
-	}
-	return result, nil
-}
-
-// toRecoveryStoreTx converts rte.StoreTx to recovery.StoreTx
-func toRecoveryStoreTx(tx *rte.StoreTx) *recovery.StoreTx {
-	return &recovery.StoreTx{
-		ID:          tx.ID,
-		TxID:        tx.TxID,
-		TxType:      tx.TxType,
-		Status:      string(tx.Status),
-		CurrentStep: tx.CurrentStep,
-		TotalSteps:  tx.TotalSteps,
-		StepNames:   tx.StepNames,
-		LockKeys:    tx.LockKeys,
-		ErrorMsg:    tx.ErrorMsg,
-		RetryCount:  tx.RetryCount,
-		MaxRetries:  tx.MaxRetries,
-		Version:     tx.Version,
-		CreatedAt:   tx.CreatedAt,
-		UpdatedAt:   tx.UpdatedAt,
-		LockedAt:    tx.LockedAt,
-		CompletedAt: tx.CompletedAt,
-		TimeoutAt:   tx.TimeoutAt,
-	}
-}
-
-// fromRecoveryStoreTx converts recovery.StoreTx to rte.StoreTx
-func fromRecoveryStoreTx(tx *recovery.StoreTx) *rte.StoreTx {
-	return &rte.StoreTx{
-		ID:          tx.ID,
-		TxID:        tx.TxID,
-		TxType:      tx.TxType,
-		Status:      rte.TxStatus(tx.Status),
-		CurrentStep: tx.CurrentStep,
-		TotalSteps:  tx.TotalSteps,
-		StepNames:   tx.StepNames,
-		LockKeys:    tx.LockKeys,
-		ErrorMsg:    tx.ErrorMsg,
-		RetryCount:  tx.RetryCount,
-		MaxRetries:  tx.MaxRetries,
-		Version:     tx.Version,
-		CreatedAt:   tx.CreatedAt,
-		UpdatedAt:   tx.UpdatedAt,
-		LockedAt:    tx.LockedAt,
-		CompletedAt: tx.CompletedAt,
-		TimeoutAt:   tx.TimeoutAt,
-	}
-}
 
 // TestProperty_RecoveryWorkerIntegration tests recovery worker with real infrastructure.
 func TestProperty_RecoveryWorkerIntegration(t *testing.T) {
@@ -353,12 +267,9 @@ func TestProperty_RecoveryWorkerIntegration(t *testing.T) {
 			}
 		}
 
-		// Create recovery store adapter
-		recoveryStore := &recoveryStoreAdapter{store: ti.StoreAdapter}
-
 		// Create recovery worker with very short stuck threshold for testing
 		worker := recovery.NewWorker(
-			recovery.WithStore(recoveryStore),
+			recovery.WithStore(ti.StoreAdapter),
 			recovery.WithLocker(ti.Locker),
 			recovery.WithCoordinator(&coordinatorAdapter{coord: coord, store: ti.StoreAdapter}),
 			recovery.WithEventBus(eventBus),
@@ -412,17 +323,11 @@ func (s *simpleRecoveryStep) SupportsCompensation() bool {
 // coordinatorAdapter adapts rte.Coordinator to recovery.Coordinator interface
 type coordinatorAdapter struct {
 	coord *rte.Coordinator
-	store *StoreAdapter
+	store *mysql.MySQLStore
 }
 
-func (a *coordinatorAdapter) Resume(ctx context.Context, txID string) error {
-	// Get the transaction from store
-	storeTx, err := a.store.GetTransaction(ctx, txID)
-	if err != nil {
-		return err
-	}
-	_, err = a.coord.Resume(ctx, storeTx)
-	return err
+func (a *coordinatorAdapter) Resume(ctx context.Context, tx *rte.StoreTx) (*rte.TxResult, error) {
+	return a.coord.Resume(ctx, tx)
 }
 
 // Ensure simpleRecoveryStep implements rte.Step interface
